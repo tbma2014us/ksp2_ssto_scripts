@@ -1,10 +1,9 @@
-use { Vessel, AutopilotMode, PilotInput, ActionGroups, FlightCtrlState } from ksp::vessel
+use { AutopilotMode, Vessel } from ksp::vessel
 use { CONSOLE } from ksp::console
-use { atmo_launch } from std::atmo
-use { wait_until, yield, sleep, current_time } from ksp::game
+use { current_time, sleep, wait_until } from ksp::game
 use { set_warp_index } from ksp::game::warp
-use { acos_deg, max, clamp, floor } from core::math
 use { trigger_staging } from std::staging
+use { floor } from core::math
 use { estimate_burn_time, exec_next_node } from std::vac
 use { circularize_orbit } from std::maneuvers
 use { pid_loop} from ksp::control
