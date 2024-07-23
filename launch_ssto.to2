@@ -1,0 +1,143 @@
+use { Vessel, AutopilotMode, PilotInput, ActionGroups, FlightCtrlState } from ksp::vessel
+use { CONSOLE } from ksp::console
+use { atmo_launch } from std::atmo
+use { wait_until, yield, sleep, current_time } from ksp::game
+use { set_warp_index } from ksp::game::warp
+use { acos_deg, max, clamp, floor } from core::math
+use { trigger_staging } from std::staging
+use { estimate_burn_time, exec_next_node } from std::vac
+use { circularize_orbit } from std::maneuvers
+use { pid_loop} from ksp::control
+
+
+sync fn timestamp() -> string = {
+    let t = current_time() % 86400.0
+    let hh = floor(t / 3600.0)
+    let hh_text = if (hh < 10.0) { "0" + hh.to_string() } else { hh.to_string() }
+    let mm = floor((t - hh * 3600.0) / 60.0)
+    let mm_text = if (mm < 10.0) { "0" + mm.to_string() } else { mm.to_string() }
+    let ss = floor(t - hh * 3600.0 - mm * 60.0)
+    let ss_text = if (ss < 10.0) { "0" + ss.to_string() } else { ss.to_string() }
+
+    return $"[{hh_text}:{mm_text}:{ss_text}]"
+}
+
+sync fn log(_string: string) -> Unit = {
+    CONSOLE.print_line($"{timestamp()} " + _string)
+}
+
+fn ascent_actions_logic(vessel: Vessel, open_cycle_cutoff_speed: float) -> Unit = {
+    if (vessel.altitude_scenery > 50.0) {
+        if (vessel.actions.gear) {
+            log("Retracting gear")
+            vessel.actions.gear = false
+        }
+
+        if(vessel.static_pressure_kpa < 2.0 || vessel.horizontal_surface_speed >= open_cycle_cutoff_speed) {
+            for(intake_ in vessel.air_intakes) {
+                if(intake_.toogle_intake) {
+                        log("Air intake closed")
+                        intake_.toogle_intake = false
+                }
+            }
+        }
+    }
+}
+
+fn pitch_control_logic(vessel: Vessel, liftoff_speed: float, liftoff_pitch: float, subsonic_pitch: float, supersonic_pitch: float, 
+closed_cycle_cutoff_speed: float, closed_cycle_pitch: float) -> float = {
+        if(vessel.altitude_scenery < 50.0 && vessel.horizontal_surface_speed < liftoff_speed) {
+            return 0.0
+        }
+
+        if (vessel.altitude_scenery >= 50.0 && vessel.altitude_sealevel < 1000.0) {
+            return liftoff_pitch
+        }
+
+        if(vessel.altitude_sealevel >= 1000.0) {
+            if (vessel.horizontal_surface_speed < 340.0) {
+                return subsonic_pitch
+            } else {
+                return supersonic_pitch
+            }
+        }
+        return liftoff_pitch
+}
+
+pub fn main_flight(vessel: Vessel, target_apoapsis: int = 100000, liftoff_speed: float = 50.0, liftoff_pitch: float = 5.0, 
+subsonic_pitch: float = 5.0, supersonic_pitch: float = 15.0, open_cycle_cutoff_speed: float = 1500.0, closed_cycle_pitch: float = 15.0
+) -> Result<Unit> = {
+    CONSOLE.clear()
+    log("=== Start: ssto_launch ===")
+    log("=== Brakes: on ===")
+    vessel.actions.light = true
+    vessel.actions.brakes = true
+    sleep(1.0)
+    
+    vessel.autopilot.enabled = true
+    vessel.autopilot.mode = AutopilotMode.Autopilot
+    sleep(1.0)
+
+    log("Launch: Trigger initial stage")
+    vessel.staging.next()
+    log("=== Brakes: off ===")
+    vessel.actions.brakes = false
+
+    const console_row = CONSOLE.cursor_row
+    CONSOLE.move_cursor(console_row + 1, 0)
+
+    vessel.set_throttle(100)
+
+    let current_pitch : float = 0.0
+
+    let pKp : float = 0.1
+    let pKi : float = 0.01
+    let pKd : float = 0.05
+    let pmin : float = -1.0
+    let pmax : float = 1.0
+    let pitchPID = pid_loop(pKp, pKi, pKd, pmin, pmax)
+
+    while(vessel.orbit.apoapsis.value < target_apoapsis) {
+        let target_pitch = pitch_control_logic(vessel, liftoff_speed, liftoff_pitch, 
+        subsonic_pitch, supersonic_pitch, open_cycle_cutoff_speed, closed_cycle_pitch)
+        pitchPID.setpoint = target_pitch
+
+        let now = current_time()
+        let pitch_adjustment = pitchPID.update(now, current_pitch)
+        current_pitch += pitch_adjustment * 0.1
+
+        if(current_pitch > 25.0) {
+            current_pitch = 25.0
+        } else if(current_pitch < -5.0) {
+            current_pitch = -5.0
+        }
+
+        CONSOLE.print_at(console_row, 0, $"Target pitch: {target_pitch,5:N3} Pitch: {current_pitch,5:N3} Speed: {vessel.horizontal_surface_speed,5:N1}")
+
+        vessel.autopilot.target_orientation = vessel.heading_direction(90, current_pitch, 0).vector
+
+        ascent_actions_logic(vessel, open_cycle_cutoff_speed)
+
+        if(trigger_staging(vessel)) {
+            set_warp_index(0)
+            log("Next stage triggered")
+        }
+
+        sleep(0.02)
+    }
+    
+    vessel.set_throttle(0)
+    log("Coasting to space")
+
+    vessel.autopilot.mode = AutopilotMode.Prograde
+    wait_until(fn() -> vessel.altitude_sealevel > vessel.main_body.atmosphere_depth * 0.9)
+
+    log("=== Done: ssto_launch ===")
+
+    const (delta_v, UT) = circularize_orbit(vessel.orbit)?
+    let (burn_time, half_burn_time) = estimate_burn_time(vessel, delta_v.magnitude, 0.5, 1.0)
+    vessel.maneuver.add_burn_vector(UT - half_burn_time, delta_v)?
+    exec_next_node(vessel)?
+
+    log($"Orbiting {vessel.main_body.name}")
+}
