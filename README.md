@@ -3,6 +3,12 @@
 
 1. [launch_ssto.to2](#launch_ssto)
 
+## Installation
+
+Copy ```*.to2``` scripts to ```<KSP2 Folder>\BepInEx\plugins\KontrolSystem2\to2\```
+
+Start from KontrolSystem2 interface.
+
 ## launch_ssto
 Uses PIDLoop to launch the SSTO for LKO.
 
