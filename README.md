@@ -9,7 +9,7 @@ Copy ```*.to2``` scripts to ```<KSP2 Folder>\BepInEx\plugins\KontrolSystem2\to2\
 
 Start from KontrolSystem2 interface.
 
-## launch_ssto
+### launch_ssto
 Uses PIDLoop to launch the SSTO for LKO.
 
 [![APACHE 2.0](https://img.shields.io/badge/License-Apache%202.0-brightgreen.svg?longCache=true&style=for-the-badge)](LICENSE)
