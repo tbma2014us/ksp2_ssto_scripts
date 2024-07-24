@@ -54,7 +54,7 @@ open_cycle_cutoff_speed: float, closed_cycle_pitch: float) -> float = {
 
         if(vessel.altitude_sealevel >= 1000.0) {
             if (vessel.horizontal_surface_speed > vessel.sound_speed) {
-                if (vessel.horizontal_surface_speed > open_cycle_cutoff_speed + 100.0) {
+                if (vessel.horizontal_surface_speed > open_cycle_cutoff_speed) {
                     return closed_cycle_pitch
                 } else {
                     return supersonic_pitch
