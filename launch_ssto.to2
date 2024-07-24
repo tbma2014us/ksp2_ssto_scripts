@@ -43,7 +43,7 @@ fn ascent_actions_logic(vessel: Vessel, open_cycle_cutoff_speed: float) -> Unit 
 }
 
 fn pitch_control_logic(vessel: Vessel, liftoff_speed: float, liftoff_pitch: float, subsonic_pitch: float, supersonic_pitch: float, 
-closed_cycle_cutoff_speed: float, closed_cycle_pitch: float) -> float = {
+open_cycle_cutoff_speed: float, closed_cycle_pitch: float) -> float = {
         if(vessel.altitude_scenery < 50.0 && vessel.horizontal_surface_speed < liftoff_speed) {
             return 0.0
         }
@@ -54,11 +54,16 @@ closed_cycle_cutoff_speed: float, closed_cycle_pitch: float) -> float = {
 
         if(vessel.altitude_sealevel >= 1000.0) {
             if (vessel.horizontal_surface_speed > vessel.sound_speed) {
-                return supersonic_pitch
+                if (vessel.horizontal_surface_speed > open_cycle_cutoff_speed + 100.0) {
+                    return closed_cycle_pitch
+                } else {
+                    return supersonic_pitch
+                }
             } else {
                 return subsonic_pitch
             }
         }
+
         return liftoff_pitch
 }
 
