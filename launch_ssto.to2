@@ -8,7 +8,6 @@ use { estimate_burn_time, exec_next_node } from std::vac
 use { circularize_orbit } from std::maneuvers
 use { pid_loop} from ksp::control
 
-
 sync fn timestamp() -> string = {
     let t = current_time() % 86400.0
     let hh = floor(t / 3600.0)
@@ -54,7 +53,7 @@ closed_cycle_cutoff_speed: float, closed_cycle_pitch: float) -> float = {
         }
 
         if(vessel.altitude_sealevel >= 1000.0) {
-            if (vessel.horizontal_surface_speed < 340.0) {
+            if (vessel.horizontal_surface_speed < vessel.sound_speed) {
                 return subsonic_pitch
             } else {
                 return supersonic_pitch
@@ -122,7 +121,7 @@ subsonic_pitch: float = 5.0, supersonic_pitch: float = 15.0, open_cycle_cutoff_s
             log("Next stage triggered")
         }
 
-        sleep(0.02)
+        sleep(0.03)
     }
     
     vessel.set_throttle(0)
