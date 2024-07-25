@@ -19,7 +19,7 @@ sync fn timestamp() -> string = {
 }
 
 sync fn log(message: string) -> Unit = {
-    CONSOLE.print_line(format("{} {}",[timestamp(), message]))
+    CONSOLE.print_line(format("{0} {1}",[timestamp(), message]))
 }
 
 fn ascent_actions_logic(vessel: Vessel, open_cycle_cutoff_speed: float) -> Unit = {
