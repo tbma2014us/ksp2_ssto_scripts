@@ -3,25 +3,23 @@ use { CONSOLE } from ksp::console
 use { current_time, sleep, wait_until } from ksp::game
 use { set_warp_index } from ksp::game::warp
 use { trigger_staging } from std::staging
-use { floor, abs } from core::math
+use { clamp, floor, abs } from core::math
+use { format } from core::str
 use { estimate_burn_time, exec_next_node } from std::vac
 use { circularize_orbit } from std::maneuvers
 use { pid_loop} from ksp::control
 
+
 sync fn timestamp() -> string = {
     let t = current_time() % 86400.0
     let hh = floor(t / 3600.0)
-    let hh_text = if (hh < 10.0) { "0" + hh.to_string() } else { hh.to_string() }
-    let mm = floor((t - hh * 3600.0) / 60.0)
-    let mm_text = if (mm < 10.0) { "0" + mm.to_string() } else { mm.to_string() }
-    let ss = floor(t - hh * 3600.0 - mm * 60.0)
-    let ss_text = if (ss < 10.0) { "0" + ss.to_string() } else { ss.to_string() }
-
-    return $"[{hh_text}:{mm_text}:{ss_text}]"
+    let mm = floor((t % 3600.0) / 60.0)
+    let ss = floor(t % 60.0)
+    format("[{0,2:00}:{1,2:00}:{2,2:00}]", [hh, mm, ss])
 }
 
-sync fn log(_string: string) -> Unit = {
-    CONSOLE.print_line($"{timestamp()} " + _string)
+sync fn log(message: string) -> Unit = {
+    CONSOLE.print_line(format("{} {}",[timestamp(), message]))
 }
 
 fn ascent_actions_logic(vessel: Vessel, open_cycle_cutoff_speed: float) -> Unit = {
@@ -30,7 +28,6 @@ fn ascent_actions_logic(vessel: Vessel, open_cycle_cutoff_speed: float) -> Unit 
             log("Retracting gear")
             vessel.actions.gear = false
         }
-
         if(vessel.static_pressure_kpa < 2.0 || vessel.horizontal_surface_speed >= open_cycle_cutoff_speed) {
             for(intake_ in vessel.air_intakes) {
                 if(intake_.toogle_intake) {
@@ -47,11 +44,9 @@ open_cycle_cutoff_speed: float, closed_cycle_pitch: float) -> float = {
         if(vessel.altitude_scenery < 50.0 && vessel.horizontal_surface_speed < liftoff_speed) {
             return 0.0
         }
-
         if (vessel.altitude_scenery >= 50.0 && vessel.altitude_sealevel < 1000.0) {
             return liftoff_pitch
         }
-
         if(vessel.altitude_sealevel >= 1000.0) {
             if (vessel.horizontal_surface_speed > vessel.sound_speed) {
                 if (vessel.horizontal_surface_speed > open_cycle_cutoff_speed) {
@@ -63,7 +58,6 @@ open_cycle_cutoff_speed: float, closed_cycle_pitch: float) -> float = {
                 return subsonic_pitch
             }
         }
-
         return liftoff_pitch
 }
 
@@ -100,19 +94,8 @@ subsonic_pitch: float = 5.0, supersonic_pitch: float = 15.0, open_cycle_cutoff_s
     let wobble_threshold = 0.1
     let wobble_detected_time: float = 0.0
 
-    let pKp = 0.1
-    let pKi : float = 0.01
-    let pKd : float = 0.05
-    let pmin : float = -1.0
-    let pmax : float = 1.0
-    let pitchPID = pid_loop(pKp, pKi, pKd, pmin, pmax)
-
-    let rKp = 0.1
-    let rKi = 0.01
-    let rKd = 0.05
-    let rmin = -1.0
-    let rmax = 1.0
-    let rollPID = pid_loop(rKp, rKi, rKd, rmin, rmax)
+    let pitchPID = pid_loop(0.1, 0.01, 0.05, -1.0, 1.0)
+    let rollPID = pid_loop(0.1, 0.01, 0.05, -1.0, 1.0)
 
     while(vessel.orbit.apoapsis.value < target_apoapsis) {
         let target_pitch = pitch_control_logic(vessel, liftoff_speed, liftoff_pitch, 
@@ -125,11 +108,7 @@ subsonic_pitch: float = 5.0, supersonic_pitch: float = 15.0, open_cycle_cutoff_s
         let roll_adjustment = rollPID.update(now, vessel.pitch_yaw_roll.z)
         current_roll = vessel.pitch_yaw_roll.z + roll_adjustment * 0.1
 
-        if(current_pitch > 25.0) {
-            current_pitch = 25.0
-        } else if(current_pitch < -5.0) {
-            current_pitch = -5.0
-        }
+        current_pitch = clamp(current_pitch, -5.0, 25.0)
 
         if(stabilize && detect_wobble(vessel, wobble_threshold)) {
             if(wobble_detected_time == 0.0) {
