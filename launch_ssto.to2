@@ -11,7 +11,7 @@ use { pid_loop} from ksp::control
 
 
 sync fn timestamp() -> string = {
-    let t = current_time() % 86400.0
+    let t = current_time() % 21600.0
     let hh = floor(t / 3600.0)
     let mm = floor((t % 3600.0) / 60.0)
     let ss = floor(t % 60.0)
