@@ -13,3 +13,4 @@ Start from KontrolSystem2 interface.
 Uses PIDLoops to launch the SSTO for LKO
 
 [![APACHE 2.0](https://img.shields.io/badge/License-Apache%202.0-brightgreen.svg?longCache=true&style=for-the-badge)](LICENSE)
+[![KSP2](https://img.shields.io/badge/KSP-2-e21401?longCache=true&style=for-the-badge)](https://www.kerbalspaceprogram.com/)
