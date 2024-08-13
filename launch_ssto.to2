@@ -1,17 +1,16 @@
 // Kontrol System 2 - v0.5.9.5
 // https://github.com/tbma2014us/ksp2_ssto_scripts/
 
-use { AutopilotMode, Vessel } from ksp::vessel
+use { AutopilotMode, Vessel, VesselSituation, ModuleEngine } from ksp::vessel
 use { CONSOLE } from ksp::console
 use { current_time, sleep, wait_until } from ksp::game
-use { set_warp_index } from ksp::game::warp
+use { cancel_warp, current_warp_index, current_warp_rate, set_warp_index } from ksp::game::warp
 use { trigger_staging } from std::staging
 use { clamp, floor, abs } from core::math
 use { format } from core::str
 use { estimate_burn_time, exec_next_node } from std::vac
 use { circularize_orbit } from std::maneuvers
 use { pid_loop} from ksp::control
-
 
 sync fn timestamp() -> string = {
     let t = current_time() % 21600.0
@@ -25,19 +24,38 @@ sync fn log(message: string) -> Unit = {
     CONSOLE.print_line(format("{0} {1}",[timestamp(), message]))
 }
 
-fn ascent_actions_logic(vessel: Vessel, open_cycle_cutoff_speed: float) -> Unit = {
+fn current_engines(vessel: Vessel) -> ksp::vessel::ModuleEngine[] = {
+    let current_engines:  ksp::vessel::ModuleEngine[] = []
+    let engine_parts = vessel.staging.parts_in_stage(vessel.staging.current).filter(fn(e) -> e.is_engine)
+    for (_part in engine_parts) {
+        current_engines += _part.engine_module.value       
+    }
+    current_engines
+}
+
+fn ascent_actions_logic(vessel: Vessel, open_cycle_cutoff_speed: float, open_cycle: Cell<bool>) -> Unit = {
     if (vessel.altitude_scenery > 50.0) {
         if (vessel.actions.gear) {
             log("Retracting gear")
             vessel.actions.gear = false
         }
         if(vessel.static_pressure_kpa < 2.0 || vessel.horizontal_surface_speed >= open_cycle_cutoff_speed) {
+            if(open_cycle.value){
+                for(engine_ in current_engines(vessel)) {
+                    if(engine_.engine_modes.find(fn(m) -> m.name == "Closed Cycle").defined) {
+                        log("Engine in closed cycle")
+                        engine_.change_mode("Closed Cycle")
+                    }
+                }
+                open_cycle.value = false
+            }
             for(intake_ in vessel.air_intakes) {
                 if(intake_.toogle_intake) {
-                        log("Air intake closed")
-                        intake_.toogle_intake = false
+                    log("Air intake closed")
+                    intake_.toogle_intake = false
                 }
             }
+            
         }
     }
 }
@@ -73,54 +91,80 @@ fn detect_wobble(vessel: Vessel, threshold: float) -> bool = {
 pub fn main_flight(vessel: Vessel, target_apoapsis: int = 100000, stabilize: bool = true, liftoff_speed: float = 50.0, liftoff_pitch: float = 5.0, 
 subsonic_pitch: float = 5.0, supersonic_pitch: float = 15.0, open_cycle_cutoff_speed: float = 1500.0, closed_cycle_pitch: float = 15.0
 ) -> Result<Unit> = {
-    CONSOLE.clear()
-    log("=== Start: ssto_launch ===")
-    log("=== Brakes: on ===")
-    vessel.actions.light = true
-    vessel.actions.brakes = true
-    sleep(1.0)
     
+    if(vessel.situation != VesselSituation.Flying) {
+        CONSOLE.clear()
+        log("=== Start: ssto_launch ===")
+        log("=== Brakes: on ===")
+        vessel.actions.light = true
+        vessel.actions.brakes = true
+        sleep(1.0)
+    } else {
+        log("=== Restart: ssto_launch ===")
+    }
+    
+    let open_cyle : Cell<bool> = Cell(
+        if(current_engines(vessel).find(fn(e) -> e.current_engine_mode.name == "Air Breathing").defined) {
+            true 
+        } else { 
+            false 
+        }
+    )
+
     vessel.autopilot.enabled = true
     vessel.autopilot.mode = AutopilotMode.Autopilot
-    sleep(1.0)
-
-    log("Launch: Trigger initial stage")
-    vessel.staging.next()
-    log("=== Brakes: off ===")
-    vessel.actions.brakes = false
+    
+    if(vessel.situation != VesselSituation.Flying) {
+        sleep(1.0)
+        log("Launch: Trigger initial stage")
+        vessel.staging.next()
+        log("=== Brakes: off ===")
+        vessel.actions.brakes = false
+    }
 
     const console_row = CONSOLE.cursor_row
     CONSOLE.move_cursor(console_row + 1, 0)
 
-    vessel.set_throttle(100)
+    vessel.set_throttle(1.0)
 
-    let current_pitch : float = 0.0
-    let current_roll = 0.0
+    let current_pitch : float = vessel.pitch_yaw_roll.x
+    let current_roll = 90.0
+    let current_yaw = 0.0
 
     let wobble_threshold = 0.1
     let wobble_detected_time: float = 0.0
 
     let pitchPID = pid_loop(0.1, 0.01, 0.05, -1.0, 1.0)
-    let rollPID = pid_loop(0.1, 0.01, 0.05, -1.0, 1.0)
+    let rollPID = pid_loop(0.2, 0.01, 0.1, -1.0, 1.0)
+    let yawPID = pid_loop(0.2, 0.01, 0.1, -1.0, 1.0)
 
     while(vessel.orbit.apoapsis.value < target_apoapsis) {
         let target_pitch = pitch_control_logic(vessel, liftoff_speed, liftoff_pitch, 
         subsonic_pitch, supersonic_pitch, open_cycle_cutoff_speed, closed_cycle_pitch)
         pitchPID.setpoint = target_pitch
+        yawPID.setpoint = 90.0
 
         let now = current_time()
         let pitch_adjustment = pitchPID.update(now, current_pitch)
         current_pitch += pitch_adjustment * 0.1
+
         let roll_adjustment = rollPID.update(now, vessel.pitch_yaw_roll.z)
         current_roll = vessel.pitch_yaw_roll.z + roll_adjustment * 0.1
-
+        
+        let yaw_adjustment = yawPID.update(now, vessel.pitch_yaw_roll.y)
+        current_yaw = vessel.pitch_yaw_roll.y + yaw_adjustment * 0.1
+  
         current_pitch = clamp(current_pitch, -5.0, 25.0)
+        current_roll = clamp(current_roll, -1, 1)
+        current_yaw = clamp(current_yaw, 89.0, 91.0)
 
         CONSOLE.print_at(console_row, 0, $"Target pitch: {target_pitch,5:N3} Pitch: {current_pitch,5:N3} Speed: {vessel.horizontal_surface_speed,5:N1}")
+
         if(stabilize && detect_wobble(vessel, wobble_threshold)) {
             if(wobble_detected_time == 0.0) {
                 wobble_detected_time = now
                 set_warp_index(0)
+                wait_until(fn() -> current_warp_rate() == 1.0)
             }
         } else {
             wobble_detected_time = 0.0
@@ -128,7 +172,7 @@ subsonic_pitch: float = 5.0, supersonic_pitch: float = 15.0, open_cycle_cutoff_s
 
         if (wobble_detected_time != 0.0) {
             if(now - wobble_detected_time < 90.0){
-                vessel.autopilot.target_orientation = vessel.heading_direction(90, current_pitch, current_roll).vector
+                vessel.autopilot.target_orientation = vessel.heading_direction(current_yaw, current_pitch, current_roll).vector
             } else {
                 wobble_detected_time = 0.0
             }
@@ -136,7 +180,7 @@ subsonic_pitch: float = 5.0, supersonic_pitch: float = 15.0, open_cycle_cutoff_s
             vessel.autopilot.target_orientation = vessel.heading_direction(90, current_pitch, 0).vector
         }
 
-        ascent_actions_logic(vessel, open_cycle_cutoff_speed)
+        ascent_actions_logic(vessel, open_cycle_cutoff_speed, open_cyle)
 
         if(trigger_staging(vessel)) {
             log("Next stage triggered")
@@ -160,3 +204,4 @@ subsonic_pitch: float = 5.0, supersonic_pitch: float = 15.0, open_cycle_cutoff_s
 
     log($"Orbiting {vessel.main_body.name}")
 }
+
