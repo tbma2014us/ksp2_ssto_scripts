@@ -4,13 +4,14 @@
 use { AutopilotMode, Vessel, VesselSituation, ModuleEngine } from ksp::vessel
 use { CONSOLE } from ksp::console
 use { current_time, sleep, wait_until } from ksp::game
-use { cancel_warp, current_warp_index, current_warp_rate, set_warp_index } from ksp::game::warp
+use { current_warp_rate, set_warp_index } from ksp::game::warp
 use { trigger_staging } from std::staging
 use { clamp, floor, abs } from core::math
 use { format } from core::str
 use { estimate_burn_time, exec_next_node } from std::vac
 use { circularize_orbit } from std::maneuvers
 use { pid_loop} from ksp::control
+
 
 sync fn timestamp() -> string = {
     let t = current_time() % 21600.0
@@ -25,7 +26,7 @@ sync fn log(message: string) -> Unit = {
 }
 
 fn current_engines(vessel: Vessel) -> ksp::vessel::ModuleEngine[] = {
-    let current_engines:  ksp::vessel::ModuleEngine[] = []
+    let current_engines: ksp::vessel::ModuleEngine[] = []
     let engine_parts = vessel.staging.parts_in_stage(vessel.staging.current).filter(fn(e) -> e.is_engine)
     for (_part in engine_parts) {
         current_engines += _part.engine_module.value       
@@ -55,37 +56,36 @@ fn ascent_actions_logic(vessel: Vessel, open_cycle_cutoff_speed: float, open_cyc
                     intake_.toogle_intake = false
                 }
             }
-            
         }
     }
 }
 
 fn pitch_control_logic(vessel: Vessel, liftoff_speed: float, liftoff_pitch: float, subsonic_pitch: float, supersonic_pitch: float, 
 open_cycle_cutoff_speed: float, closed_cycle_pitch: float) -> float = {
-        if(vessel.altitude_scenery < 50.0 && vessel.horizontal_surface_speed < liftoff_speed) {
-            return 0.0
-        }
-        if (vessel.altitude_scenery >= 50.0 && vessel.altitude_sealevel < 1000.0) {
-            return liftoff_pitch
-        }
-        if(vessel.altitude_sealevel >= 1000.0) {
-            if (vessel.horizontal_surface_speed > vessel.sound_speed) {
-                if (vessel.horizontal_surface_speed > open_cycle_cutoff_speed) {
-                    return closed_cycle_pitch
-                } else {
-                    return supersonic_pitch
-                }
-            } else {
-                return subsonic_pitch
-            }
-        }
+    if(vessel.altitude_scenery < 50.0 && vessel.horizontal_surface_speed < liftoff_speed) {
+        return 0.0
+    }
+    if (vessel.altitude_scenery >= 50.0 && vessel.altitude_sealevel < 1000.0) {
         return liftoff_pitch
+    }
+    if(vessel.altitude_sealevel >= 1000.0) {
+        if (vessel.horizontal_surface_speed > vessel.sound_speed) {
+            if (vessel.horizontal_surface_speed > open_cycle_cutoff_speed) {
+                return closed_cycle_pitch
+            } else {
+                return supersonic_pitch
+            }
+        } else {
+            return subsonic_pitch
+        }
+    }
+    liftoff_pitch
 }
 
 fn detect_wobble(vessel: Vessel, threshold: float) -> bool = {
     let yaw_rate = vessel.angular_velocity.y
     let roll_rate = vessel.angular_velocity.z
-    return abs(yaw_rate) > threshold || abs(roll_rate) > threshold
+    abs(yaw_rate) > threshold || abs(roll_rate) > threshold
 }
 
 pub fn main_flight(vessel: Vessel, target_apoapsis: int = 100000, stabilize: bool = true, liftoff_speed: float = 50.0, liftoff_pitch: float = 5.0, 
@@ -103,7 +103,7 @@ subsonic_pitch: float = 5.0, supersonic_pitch: float = 15.0, open_cycle_cutoff_s
         log("=== Restart: ssto_launch ===")
     }
     
-    let open_cyle : Cell<bool> = Cell(
+    let open_cyle: Cell<bool> = Cell(
         if(current_engines(vessel).find(fn(e) -> e.current_engine_mode.name == "Air Breathing").defined) {
             true 
         } else { 
@@ -127,7 +127,7 @@ subsonic_pitch: float = 5.0, supersonic_pitch: float = 15.0, open_cycle_cutoff_s
 
     vessel.set_throttle(1.0)
 
-    let current_pitch : float = vessel.pitch_yaw_roll.x
+    let current_pitch: float = vessel.pitch_yaw_roll.x
     let current_roll = 90.0
     let current_yaw = 0.0
 
@@ -204,4 +204,3 @@ subsonic_pitch: float = 5.0, supersonic_pitch: float = 15.0, open_cycle_cutoff_s
 
     log($"Orbiting {vessel.main_body.name}")
 }
-
