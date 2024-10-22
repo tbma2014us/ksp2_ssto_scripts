@@ -3,13 +3,19 @@
 
 1. [launch_ssto.to2](#launch_ssto)
 
+2. [com_col_inflight.to2](#com_col_inflight)
+
 ## Installation
 
 Copy ```*.to2``` scripts to ```<KSP2 Folder>\BepInEx\plugins\KontrolSystem2\to2\```
 
 Start from KontrolSystem2 interface.
 
+### com_col_inflight
+Displays "centero of mass" and "center of lift" in flight
+
 ### launch_ssto
 Uses PIDLoops to launch the SSTO for LKO
+
 
 [![APACHE 2.0](https://img.shields.io/badge/License-Apache%202.0-brightgreen.svg?longCache=true&style=for-the-badge)](LICENSE)
