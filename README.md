@@ -12,7 +12,7 @@ Copy ```*.to2``` scripts to ```<KSP2 Folder>\BepInEx\plugins\KontrolSystem2\to2\
 Start from KontrolSystem2 interface.
 
 ### com_col_inflight
-Displays "centero of mass" and "center of lift" in flight
+Displays "center of mass" and "center of lift" in flight
 
 ### launch_ssto
 Uses PIDLoops to launch the SSTO for LKO
