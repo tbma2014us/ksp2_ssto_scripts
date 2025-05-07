@@ -336,7 +336,7 @@ fn add_single_resource_to_transfer(
     return 0.0
 }
 
-fn add_tanks_wil_limit(
+fn add_tanks_with_limit(
     rt: ResourceTransfer,
     container_info: TankInfo,
     flow_direction: FlowDirection,
@@ -433,7 +433,7 @@ fn configure_mass_transfer(
                 let limit_for_this_sender = min(tons_to_send_remaining, mass_this_tank_can_actually_provide)
 
                 if (limit_for_this_sender > mass_tolerance) {
-                    let mass_configured_for_sender = add_tanks_wil_limit(
+                    let mass_configured_for_sender = add_tanks_with_limit(
                         rt,
                         tank_info,
                         FlowDirection.FLOW_OUTBOUND,
@@ -451,7 +451,7 @@ fn configure_mass_transfer(
                 let limit_for_this_receiver = min(tons_to_receive_remaining, mass_this_tank_can_actually_receive)
 
                 if (limit_for_this_receiver > mass_tolerance) {
-                    let mass_configured_for_receiver = add_tanks_wil_limit(
+                    let mass_configured_for_receiver = add_tanks_with_limit(
                         rt,
                         tank_info,
                         FlowDirection.FLOW_INBOUND,
