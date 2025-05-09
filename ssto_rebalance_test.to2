@@ -519,7 +519,7 @@ pub fn main_flight(vessel: Vessel, quicksave: bool = true, forward_fuel_percenta
         let rt = configure_mass_transfer(vessel, configured_tanks, rebalance)
 
         if (rt.defined) {
-            let r: ResourceTransfer = rt.value
+            const r: ResourceTransfer = rt.value
             r.start()
             wait_while(fn() -> r.is_running)
             r.stop()
