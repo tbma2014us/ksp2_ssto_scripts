@@ -521,7 +521,7 @@ pub fn main_flight(vessel: Vessel, quicksave: bool = true, forward_fuel_percenta
         if (rt.defined) {
             let r: ResourceTransfer = rt.value
             r.start()
-            while (r.is_running) sleep(0.1)
+            wait_while(fn() -> r.is_running)
             r.stop()
             CONSOLE.print_line("Transfer complete.")
         }
