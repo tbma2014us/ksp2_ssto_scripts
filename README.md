@@ -5,7 +5,7 @@
 
 2. [ssto_com_col_inflight.to2](#ssto_com_col_inflight)
 
-3. [ssto_rebalance_test.to2](#ssto_rebalance_test)
+3. [ssto_rebalance.to2](#ssto_rebalance)
 
 ## Installation
 
@@ -19,7 +19,7 @@ Displays "center of mass" and "center of lift" in flight
 ### ssto_launch
 Uses PIDLoops to launch the SSTO for LKO
 
-### ssto_rebalance_test
+### ssto_rebalance
 Makes SSTO nose-heavy by automatically transferring fuel
 
 ---
