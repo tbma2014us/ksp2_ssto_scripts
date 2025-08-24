@@ -1,0 +1,490 @@
+// Kontrol System 2 - v0.5.9.5
+// https://github.com/tbma2014us/ksp2_ssto_scripts/
+
+// Making space plane nose-heavy for reentry
+
+use { Vessel, Part, PartCategory } from ksp::vessel
+use { CONSOLE } from ksp::console
+use { sleep } from ksp::game
+use { format} from core::str
+use { abs, round, sqrt, max, min } from core::math
+use { vec3, Vec3, GlobalVector, GlobalPosition } from ksp::math
+use { yield, current_time, wait_while, wait_until } from ksp::game
+use { create_resource_transfer, FlowDirection, ResourceContainer, ResourceData, ResourceDefinition, ResourceTransfer } from ksp::resource
+use { SAVE_LOAD_CONTROL } from ksp::debug
+
+struct TankInfo(part_in: Part, container_data_in: ResourceContainer, body_pos_in: Vec3, resouce_name: string, stored_units_in: float, capacity_units_in: float) {
+    part: Part = part_in
+    resource_data: ResourceContainer  = container_data_in
+    body_pos: Vec3 = body_pos_in
+    pos_z: float = body_pos_in.z
+    pos_x:float = body_pos_in.x
+    resoruce_name: string = resouce_name
+    stored: float = stored_units_in
+    capacity: float = capacity_units_in
+    space: float = capacity_units_in - stored_units_in
+}
+
+impl TankInfo{
+    fn resource_name(self) -> string = {
+        let my_resource_name = ""
+                for (r in 0..self.resource_data.list.length) {
+            my_resource_name += self.resource_data.list[r].resource.name
+        }
+        my_resource_name
+    }
+
+    fn stored_units(self) -> float= {
+        let stored_units = 0.0
+        for (r in 0..self.resource_data.list.length) {
+            stored_units += self.resource_data.list[r].stored_units
+        }
+        stored_units
+    }
+
+    fn capacity_units(self) -> float = {
+        let capacity_units = 0.0
+        for (r in 0..self.resource_data.list.length) {
+            capacity_units += self.resource_data.list[r].capacity_units
+        }
+        capacity_units
+    }
+
+    fn stored_total_mass(self) -> float = {
+        return self.resource_data.stored_total_mass
+    }
+
+    fn capacity_total_mass(self) -> float = {
+        let max_mass = 0.0
+        for (data in self.resource_data.list) {
+            max_mass += data.capacity_units * data.resource.mass_per_unit
+        }
+        return max_mass
+    }
+
+    fn remaining_mass_capacity(self) -> float = {
+        return self.capacity_total_mass() - self.stored_total_mass()
+    }
+}
+
+fn fuel_tank_parts(vessel: Vessel) -> Part[] = {
+    const FuelTank = PartCategory.from_string("FuelTank")
+    if (FuelTank.defined) {
+        return vessel.parts.filter(fn(p) -> p.part_category == FuelTank.value)
+    } else return []
+}
+
+fn find_part_resource_data(part_resources: ResourceContainer, resource_name: string) -> Option<ResourceContainer> = {
+    let combined_name = ""
+    for (data in part_resources.list) {
+        combined_name += data.resource.name
+        if (resource_name == combined_name) return Some(part_resources)
+    }
+    return None()
+}
+
+struct FuelInfo(resource_name_in: string, resource_mass_in: float) {
+    resource_name: string = resource_name_in
+    resource_mass: float = resource_mass_in
+}
+
+sync fn find_part_resource_mass(part: Part) -> Option<FuelInfo> = {
+    let container = part.resources
+    const EXCLUDED = ["Intake Air", "Electric Charge", "Monopropellant"]
+
+    if (container.list.is_empty) return None()
+    
+    const first_name = container.list[0].resource.display_name
+    if (EXCLUDED.exists(fn(n) -> n == first_name)) {
+        return None()
+    }
+
+    let fuel_entries = container.list.filter(fn(d) -> d.capacity_units > 0.0 && d.stored_units > 0.0)
+
+    let total_mass = fuel_entries
+        .map(fn(d) -> d.resource.mass_per_unit * d.stored_units)
+        .reduce(0.0, fn(acc, m) -> acc + m)
+
+    let combined_name = fuel_entries
+        .map(fn(d) -> d.resource.display_name)
+        .reduce("", fn(acc, n) -> acc + n)
+
+    if (total_mass > 0.0001) Some(FuelInfo(combined_name, total_mass)) else None()
+}
+
+
+fn find_all_tanks(vessel: Vessel, fuel_type_name: string) -> TankInfo[] = {
+    let tanks : TankInfo[] = []
+    for (part in fuel_tank_parts(vessel)) {
+        let maybe_res_data = find_part_resource_data(part.resources, fuel_type_name)
+        if (maybe_res_data.defined) {
+            let res_data = maybe_res_data.value
+
+            let combined_capacity_units = 0.0
+            let combined_stored_units = 0.0
+            let combined_name = ""
+
+            for (r in 0..res_data.list.length) {
+                combined_capacity_units += res_data.list[r].capacity_units
+                combined_stored_units += res_data.list[r].stored_units
+                combined_name +=  res_data.list[r].resource.display_name
+            }
+            if (combined_capacity_units > 0.0) {
+                let body_pos = part.global_position.to_local(vessel.body_frame)
+                tanks += TankInfo(part, res_data, body_pos, combined_name, combined_stored_units, combined_capacity_units)
+            }
+        }
+        yield()
+    }
+    tanks
+}
+
+
+fn find_best_resource(vessel: Vessel) -> Option<string> = {
+    let fuels = fuel_tank_parts(vessel)
+        .map(fn(m) -> find_part_resource_mass(m))
+        .filter(fn(opt) -> opt.defined && opt.value.resource_mass > 0.0001)
+        .map(fn(opt) -> opt.value)
+
+    let aggregated : FuelInfo[] = []
+    for (f in fuels) {
+        let existing = aggregated.find(fn(a) -> a.resource_name == f.resource_name)
+        if (existing.defined) {
+            existing.value.resource_mass += f.resource_mass
+        } else {
+            aggregated += f
+        }
+    }
+
+    let sorted = aggregated.sort_by(fn(r) -> r.resource_mass).reverse()
+    if (sorted.is_empty) None() else Some(sorted[0].resource_name)
+}
+
+
+fn calculate_fuel_mass_distribution(vessel: Vessel, relevant_tanks: TankInfo[]) -> (float, float) = {
+    if (relevant_tanks.is_empty) {
+        CONSOLE.print_line("Distribution: No tanks provided")
+        return (0.0, 0.0)
+    }
+
+    let vessel_com = vessel.global_center_of_mass.to_local(vessel.body_frame)
+    let threshold = 2.5
+
+    let relevant_tanks_in = relevant_tanks
+
+    let (fwd, back, neutral) = (0.0, 0.0, 0.0)
+    for (t in relevant_tanks_in) {
+        let dz = t.body_pos.z - vessel_com.z
+        let mass = t.stored_total_mass()
+        if (dz > threshold) {
+            fwd += mass
+        } else if (dz < -threshold) {
+            back += mass
+        } else {
+            neutral += mass
+        }
+    }
+
+    CONSOLE.print_line(format("Forward mass: {0:N3}t ", fwd) +
+                       format("Backward mass: {0:N3}t ", back) +
+                       format("Central mass: {0:N3}t ", neutral))
+
+    (fwd, back)
+}
+
+
+fn group_tanks_into_rows(all_tanks: TankInfo[], row_xy_tolerance: float) -> TankInfo[][] = {
+    CONSOLE.print_line("Determining the fuel tanks geometry:")
+    let rows: TankInfo[][] = []
+    let assigned_tanks: string[] = []
+
+    for (tank in all_tanks) {
+        let found_row = false
+        for (idx in 0..rows.length) {
+             let row : TankInfo[] = rows[idx]
+             if (row.is_empty) { continue }
+             let ref_tank = row[0] 
+             let dx: float = tank.body_pos.x - ref_tank.body_pos.x
+             let dy: float = tank.body_pos.y - ref_tank.body_pos.y
+             if (sqrt(dx*dx + dy*dy) <= row_xy_tolerance) {
+                 row += [tank]
+                 rows[idx] = row
+                 assigned_tanks += [tank.part.id]
+                 found_row = true
+                 break
+             }
+        }
+        if (!found_row) {
+            rows += [[tank]]
+            assigned_tanks += [tank.part.id]
+        }
+        yield()
+    }
+    for (idx in 0..rows.length) {
+        rows[idx] = rows[idx].sort_by(fn(r) -> r.pos_z)
+    }
+    return rows
+}
+
+
+fn select_tanks(rows: TankInfo[][]) -> TankInfo[][]= {
+    let  output: TankInfo[][] = []
+
+    if (rows.length > 0) {
+        let first_row_elements = rows[0] 
+        for (element_in_first_row in first_row_elements) { 
+            output += [[element_in_first_row]] 
+        }
+    } else {
+        return output
+    }
+
+    let following_rows: TankInfo[][] = []
+    if (rows.length > 1) {
+        for (i in 1..rows.length) {
+            following_rows += [rows[i]]
+        }
+    }
+
+    if (following_rows.is_empty) {
+        return output
+    }
+
+    let  lis1: TankInfo[][] = []
+    let  list2: TankInfo[][] = []
+
+    for (i in 0..following_rows.length) {
+        if (i % 2 == 0) {
+            lis1 += [following_rows[i]]
+        } else {
+            list2 += [following_rows[i]]
+        }
+    }
+
+    let  max_len = 0
+    let  rows_to_check_len: TankInfo[][] = []
+    for (r in lis1) { rows_to_check_len += [r] }
+    for (r in list2) { rows_to_check_len += [r] }
+
+    for (row in rows_to_check_len) {
+        if (row.length > max_len) {
+            max_len = row.length
+        }
+    }
+
+    for (i in 0..max_len) {
+        let  current: TankInfo[] = []
+        
+        if (lis1.length > 0) {
+            for (row_from_list1 in lis1) {
+                 if (i < row_from_list1.length) {
+                    current += [row_from_list1[i]]
+                    break
+                 }
+            }
+        }
+        
+        if (current.length < 2 && list2.length > 0) {
+            for (row_from_list2 in list2) {
+                if (i < row_from_list2.length) {
+                    current += [row_from_list2[i]]
+                    break
+                }
+            }
+        }
+        
+        if (current.length >= 2) {
+            output += [current]
+        } else if (current.length > 0) {
+        }
+    }
+    return output
+}
+
+
+fn add_tanks_with_limit(
+    transfer: ResourceTransfer,
+    entry: ResourceData,
+    direction: FlowDirection,
+    max_mass: float
+) -> float = {
+    let eps = 0.0001
+    let unit_mass = entry.resource.mass_per_unit
+    if (unit_mass <= 0.0) return 0.0
+
+    let stored_mass = entry.stored_units * unit_mass
+    let cap_mass   = entry.capacity_units * unit_mass
+    let free_mass  = cap_mass - stored_mass
+
+    let allowed_mass = if (direction == FlowDirection.FLOW_OUTBOUND) {
+        min(max_mass, stored_mass)
+    } else {
+        min(max_mass, free_mass)
+    }
+
+    if (allowed_mass > eps) {
+        transfer.add_resource(direction, entry, allowed_mass)
+        allowed_mass
+    } else 0.0
+}
+
+
+fn add_tank_resources_with_limit(
+    transfer: ResourceTransfer,
+    tank: TankInfo,
+    direction: FlowDirection,
+    tank_mass_limit: float
+) -> float = {
+    let eps = 0.0001
+    if (tank_mass_limit < eps) return 0.0
+
+    let ref_mass = if (direction == FlowDirection.FLOW_OUTBOUND) {
+        tank.stored_total_mass()
+    } else {
+        tank.capacity_total_mass()
+    }
+    if (ref_mass < eps) return 0.0
+
+    let total_added = 0.0
+
+    for (res in tank.resource_data.list) {
+        let unit_mass = res.resource.mass_per_unit
+        if (unit_mass <= eps) continue
+
+        let share = if (direction == FlowDirection.FLOW_OUTBOUND) {
+            (res.stored_units * unit_mass) / ref_mass
+        } else {
+            (res.capacity_units * unit_mass) / ref_mass
+        }
+
+        if (share <= eps) continue
+
+        let limit = share * tank_mass_limit
+        let added = add_tanks_with_limit(transfer, res, direction, limit)
+        total_added += added
+    }
+
+    total_added
+}
+
+
+fn configure_mass_transfer(
+    vessel: Vessel,
+    rows: TankInfo[][],
+    total_mass_limit: float
+) -> Option<ResourceTransfer> = {
+    CONSOLE.print_line(format("Configuring balanced mass transfer (limit {0:N3}t)", total_mass_limit))
+
+    let eps = 0.0001
+    if (rows.is_empty || total_mass_limit < eps) {
+        CONSOLE.print_line("No rows to process.")
+        return None()
+    }
+
+    let transfer = create_resource_transfer()
+    let send_remaining = total_mass_limit
+    let recv_remaining = total_mass_limit
+    let send_count = 0
+    let recv_count = 0
+
+    let com_z = vessel.global_center_of_mass.to_local(vessel.body_frame).z
+    let z_threshold = 2.5
+
+    for (row_idx in 0..rows.length) {
+        let tanks = rows[row_idx]
+        CONSOLE.print_line(format(" Processing row {0} with {1} tank(s)...", [row_idx, tanks.length]))
+
+        for (tank in tanks) {
+            if (send_remaining < eps && recv_remaining < eps) {
+                CONSOLE.print_line(" Both send and receive limits achieved.")
+                break
+            }
+
+            let dz = tank.body_pos.z - com_z
+
+            if (dz < -z_threshold && send_remaining > eps) {
+                let tank_can_send = tank.stored_total_mass()
+                let limit = min(send_remaining, tank_can_send)
+                let added = add_tank_resources_with_limit(transfer, tank, FlowDirection.FLOW_OUTBOUND, limit)
+
+                if (added > eps) {
+                    send_remaining -= added
+                    send_count += 1
+                }
+            }
+
+            else if (dz > z_threshold && recv_remaining > eps) {
+                let tank_can_recv = tank.remaining_mass_capacity()
+                let limit = min(recv_remaining, tank_can_recv)
+                let added = add_tank_resources_with_limit(transfer, tank, FlowDirection.FLOW_INBOUND, limit)
+
+                if (added > eps) {
+                    recv_remaining -= added
+                    recv_count += 1
+                }
+            }
+            yield()
+        }
+
+        if (send_remaining < eps && recv_remaining < eps) break
+    }
+
+    CONSOLE.print_line("--- Transfer Configuration Summary ---")
+    CONSOLE.print_line(format(" Transfer Limit: {0:N3}t", total_mass_limit))
+    CONSOLE.print_line(format(" Senders: {0}, Receivers: {1}", [send_count, recv_count]))
+
+    if (send_count > 0 && recv_count > 0) {
+        Some(transfer)
+    } else {
+        CONSOLE.print_line(" No suitable senders or receivers found.")
+        None()
+    }
+}
+
+
+pub fn main_flight(vessel: Vessel, forward_fuel_percentage: float = 65.0, quicksave: bool = true) -> Result<Unit, string> = {
+
+    if (quicksave) {
+        CONSOLE.print_line("Creating quick save.")
+        SAVE_LOAD_CONTROL.quick_save()
+        wait_while(fn() -> SAVE_LOAD_CONTROL.is_saving)
+    }
+
+    let best_fuel = find_best_resource(vessel)
+    if (best_fuel.defined) {
+        CONSOLE.print_line("Selected: " + best_fuel.value)
+
+        let mytanks : TankInfo[] = find_all_tanks(vessel, best_fuel.value)
+        let tankrows : TankInfo[][] = group_tanks_into_rows(mytanks, 0.1)
+
+        for (r in 0..tankrows.length) {
+            CONSOLE.print_line("Fuel tanks row: " + r.to_string())
+            let current_row = tankrows[r]
+
+            if (!current_row.is_empty) {
+                CONSOLE.print_line(" -> : " + current_row.length.to_string())
+                for (t in 0..current_row.length) {
+                     CONSOLE.print_line(format("x:{0:N2} ", current_row[t].pos_x) + format("z:{0:N2} ", current_row[t].pos_z))
+                }
+            } else {
+                CONSOLE.print_line(" -> Empty")
+            }
+        }
+        let (forward_mass, backward_mass) = calculate_fuel_mass_distribution(vessel, mytanks)
+        if (forward_mass > backward_mass) { 
+            CONSOLE.print_line("Already nose-heavy.")
+        } else {
+            let rebalance = ((forward_mass + backward_mass) / 100.0) * forward_fuel_percentage - forward_mass
+            let configured_tanks = select_tanks(tankrows)
+            let rt = configure_mass_transfer(vessel, configured_tanks, rebalance)
+
+            if (rt.defined) {
+                const r: ResourceTransfer = rt.value
+                r.start()
+                wait_while(fn() -> r.is_running)
+                r.stop()
+                CONSOLE.print_line("Transfer complete.")
+            }
+        }
+    }
+}
