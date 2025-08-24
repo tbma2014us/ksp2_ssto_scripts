@@ -442,7 +442,12 @@ fn configure_mass_transfer(
 }
 
 
-pub fn main_flight(vessel: Vessel, forward_fuel_percentage: float = 65.0, quicksave: bool = true) -> Result<Unit, string> = {
+pub fn main_flight(
+    vessel: Vessel, 
+    forward_fuel_percentage: float = 65.0, 
+    transfer_threshold: float = 0.4, 
+    quicksave: bool = true
+) -> Result<Unit, string> = {
 
     if (quicksave) {
         CONSOLE.print_line("Creating quick save.")
@@ -472,8 +477,8 @@ pub fn main_flight(vessel: Vessel, forward_fuel_percentage: float = 65.0, quicks
         }
         let (forward_mass, backward_mass) = calculate_fuel_mass_distribution(vessel, mytanks)
         let rebalance = ((forward_mass + backward_mass) / 100.0) * forward_fuel_percentage - forward_mass
-        
-        if (rebalance < 0.4) { 
+
+        if (rebalance < transfer_threshold) { 
             CONSOLE.print_line("Already nose-heavy.")
         } else {
             let configured_tanks = select_tanks(tankrows)
