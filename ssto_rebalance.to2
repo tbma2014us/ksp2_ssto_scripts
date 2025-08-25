@@ -442,11 +442,11 @@ fn configure_mass_transfer(
 }
 
 
-pub fn main_flight(
+pub fn fuel_rebalance(
     vessel: Vessel, 
-    forward_fuel_percentage: float = 65.0, 
-    transfer_threshold: float = 0.4, 
-    quicksave: bool = true
+    forward_fuel_percentage: float, 
+    transfer_threshold: float, 
+    quicksave: bool
 ) -> Result<Unit, string> = {
 
     if (quicksave) {
@@ -493,4 +493,16 @@ pub fn main_flight(
             }
         }
     }
+}
+
+
+pub fn main_flight(
+    vessel: Vessel, 
+    forward_fuel_percentage: float = 65.0, 
+    transfer_threshold: float = 0.4, 
+    quicksave: bool = true
+) -> Result<Unit, string> = {
+
+    let result = fuel_rebalance(vessel, forward_fuel_percentage, transfer_threshold, quicksave)
+    result
 }
