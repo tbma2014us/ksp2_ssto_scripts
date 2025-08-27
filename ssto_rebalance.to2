@@ -26,45 +26,31 @@ struct TankInfo(part_in: Part, container_data_in: ResourceContainer, body_pos_in
 }
 
 impl TankInfo{
-    fn resource_name(self) -> string = {
-        let my_resource_name = ""
-                for (r in 0..self.resource_data.list.length) {
-            my_resource_name += self.resource_data.list[r].resource.name
-        }
-        my_resource_name
-    }
+    fn resource_name(self) -> string =
+        self.resource_data.list
+            .map(fn(r) -> r.resource.name)
+            .reduce("", fn(acc, name) -> acc + name)
 
-    fn stored_units(self) -> float= {
-        let stored_units = 0.0
-        for (r in 0..self.resource_data.list.length) {
-            stored_units += self.resource_data.list[r].stored_units
-        }
-        stored_units
-    }
+    fn stored_units(self) -> float =
+        self.resource_data.list
+            .map(fn(r) -> r.stored_units)
+            .reduce(0.0, fn(acc, u) -> acc + u)
 
-    fn capacity_units(self) -> float = {
-        let capacity_units = 0.0
-        for (r in 0..self.resource_data.list.length) {
-            capacity_units += self.resource_data.list[r].capacity_units
-        }
-        capacity_units
-    }
+    fn capacity_units(self) -> float =
+        self.resource_data.list
+            .map(fn(r) -> r.capacity_units)
+            .reduce(0.0, fn(acc, u) -> acc + u)
 
-    fn stored_total_mass(self) -> float = {
-        return self.resource_data.stored_total_mass
-    }
+    fn stored_total_mass(self) -> float =
+        self.resource_data.stored_total_mass
 
-    fn capacity_total_mass(self) -> float = {
-        let max_mass = 0.0
-        for (data in self.resource_data.list) {
-            max_mass += data.capacity_units * data.resource.mass_per_unit
-        }
-        return max_mass
-    }
+    fn capacity_total_mass(self) -> float =
+        self.resource_data.list
+            .map(fn(r) -> r.capacity_units * r.resource.mass_per_unit)
+            .reduce(0.0, fn(acc, m) -> acc + m)
 
-    fn remaining_mass_capacity(self) -> float = {
-        return self.capacity_total_mass() - self.stored_total_mass()
-    }
+    fn remaining_mass_capacity(self) -> float =
+        self.capacity_total_mass() - self.stored_total_mass()
 }
 
 fn fuel_tank_parts(vessel: Vessel) -> Part[] = {
