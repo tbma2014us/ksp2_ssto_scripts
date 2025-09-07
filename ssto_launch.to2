@@ -43,7 +43,7 @@ fn ascent_actions_logic(vessel: Vessel, open_cycle_cutoff_speed: float, open_cyc
         if(vessel.static_pressure_kpa < 2.0 || vessel.horizontal_surface_speed >= open_cycle_cutoff_speed) {
             if(open_cycle.value){
                 for(engine_ in current_engines(vessel)) {
-                    if(engine_.engine_modes.find(fn(m) -> m.name == "Closed Cycle").defined) {
+                    if(engine_.engine_modes.exists(fn(m) -> m.name == "Closed Cycle")) {
                         log("Engine in closed cycle")
                         engine_.change_mode("Closed Cycle")
                     }
@@ -87,19 +87,19 @@ pub fn main_flight(vessel: Vessel, target_apoapsis: int = 100000, liftoff_speed:
 subsonic_pitch: float = 5.0, supersonic_pitch: float = 15.0, open_cycle_cutoff_speed: float = 1500.0, closed_cycle_pitch: float = 15.0
 ) -> Result<Unit> = {
     
-    if(vessel.situation != VesselSituation.Flying) {
+    if(vessel.situation == VesselSituation.PreLaunch || vessel.situation == VesselSituation.Landed) {
         CONSOLE.clear()
         log("=== Start: ssto_launch ===")
         log("=== Brakes: on ===")
         vessel.actions.light = true
         vessel.actions.brakes = true
         sleep(1.0)
-    } else {
+    } else if(vessel.situation == VesselSituation.Flying) {
         log("=== Restart: ssto_launch ===")
-    }
+    } else return Ok({})
     
     let open_cyle: Cell<bool> = Cell(
-        if(current_engines(vessel).find(fn(e) -> e.current_engine_mode.name == "Air Breathing").defined) {
+        if(current_engines(vessel).exists(fn(e) -> e.current_engine_mode.name == "Air Breathing")) {
             true 
         } else { 
             false 
@@ -165,8 +165,10 @@ subsonic_pitch: float = 5.0, supersonic_pitch: float = 15.0, open_cycle_cutoff_s
     log("=== Done: ssto_launch ===")
 
     const (delta_v, UT) = circularize_orbit(vessel.orbit)?
+    // @vs-ignore
     let (burn_time, half_burn_time) = estimate_burn_time(vessel, delta_v.magnitude, 0.5, 1.0)
     vessel.maneuver.add_burn_vector(UT - half_burn_time, delta_v)?
+    vessel.autopilot.mode = AutopilotMode.Maneuver
     exec_next_node(vessel)?
 
     log($"Orbiting {vessel.main_body.name}")
