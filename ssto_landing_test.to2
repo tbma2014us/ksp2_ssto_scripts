@@ -444,8 +444,6 @@ pub fn main_flight(vessel: Vessel, overshoot: float = 580.0) -> Result<Unit> = {
         vessel.autopilot.target_orientation = vessel.heading_direction(dir2 * RAD_TO_DEG, 40.0, 0.0).vector
         let acq_timeout = current_time() + 30.0
         while (abs(vessel.pitch_yaw_roll.z) > 1.0 && current_time() < acq_timeout) {
-            let r_err2 = norm_angle_deg(-vessel.pitch_yaw_roll.z)
-            vessel.override_input_roll(clamp(-r_err2 / 10.0, -1.0, 1.0))
             sleep(0.05)
         }
         vessel.override_input_roll(0.0)
