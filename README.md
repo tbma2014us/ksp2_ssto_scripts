@@ -3,9 +3,11 @@
 
 1. [ssto_launch.to2](#ssto_launch)
 
-2. [ssto_com_col_inflight.to2](#ssto_com_col_inflight)
+2. [ssto_landing_test.to2](#ssto_landing_test)
 
-3. [ssto_rebalance.to2](#ssto_rebalance)
+3. [ssto_com_col_inflight.to2](#ssto_com_col_inflight)
+
+4. [ssto_rebalance.to2](#ssto_rebalance)
 
 ## Installation
 
@@ -18,6 +20,9 @@ Displays "center of mass" and "center of lift" in flight
 
 ### ssto_launch
 Uses PIDLoops to launch the SSTO for LKO
+
+### ssto_landing_test
+Test: Allows a pilot orbiting Kerbin in LKO to choose a landing strip and land automatically.
 
 ### ssto_rebalance
 Makes SSTO nose-heavy by automatically transferring fuel
