@@ -8,6 +8,7 @@
 // * Airbrakes are extremely useful for bleeding speed and helping with thermal management
 // * Make sure the plane has enough pitch authority
 // * A good reentry plane should naturally stabilize in level flight
+// * It’s not rocket science… until it suddenly is
 
 use { AutopilotMode, Vessel, VesselSituation } from ksp::vessel
 use { CONSOLE, GREEN } from ksp::console
