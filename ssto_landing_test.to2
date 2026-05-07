@@ -1,6 +1,14 @@
 // Kontrol System 2 - v0.5.9.5
 // https://github.com/tbma2014us/ksp2_ssto_scripts/
 
+// Design coonsiderations for reentry: 
+// * Keep the plane slightly nose-heavy to avoid flying tail-forward
+// * Add plenty of reaction wheels to keep the craft responsive in thin atmosphere
+// * Bring enough batteries to keep the control wheels powered
+// * Airbrakes are extremely useful for bleeding speed and helping with thermal management
+// * Make sure the plane has enough pitch authority
+// * A good reentry plane should naturally stabilize in level flight
+
 use { AutopilotMode, Vessel, VesselSituation } from ksp::vessel
 use { CONSOLE, GREEN } from ksp::console
 use { CONSOLE_WINDOW, open_window, Align, screen_size } from ksp::ui
