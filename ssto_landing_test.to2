@@ -4,7 +4,7 @@
 // Design coonsiderations for reentry: 
 // * Keep the plane slightly nose-heavy to avoid flying tail-forward
 // * Add plenty of reaction wheels to keep the craft responsive in thin atmosphere
-// * Bring enough batteries to keep the control wheels powered
+// * Bring enough batteries to keep the reaction wheels powered
 // * Airbrakes are extremely useful for bleeding speed and helping with thermal management
 // * Make sure the plane has enough pitch authority
 // * A good reentry plane should naturally stabilize in level flight
