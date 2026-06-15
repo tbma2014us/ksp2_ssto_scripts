@@ -1,89 +1,112 @@
 // Kontrol System 2 - v0.5.9.5
 // https://github.com/tbma2014us/ksp2_ssto_scripts/
-
-// Making space plane nose-heavy for reentry
+//
+// Making a space plane nose-heavy for reentry.
+//
+// We shift fuel along the fore/aft axis (the vessel body-frame Z axis) until a
+// chosen share of the total fuel mass sits ahead of the centre of mass.
+//
+// Every transfer moves the centre of mass, so a single pass overshoots or falls
+// short. Instead we run a short convergence loop: measure the balance, transfer
+// toward the target, then re-measure and repeat until one of three things
+// happens — the balance is close enough, a pass makes no further progress, or
+// there is no tank left that can send or receive.
 
 use { Vessel, Part, PartCategory } from ksp::vessel
 use { CONSOLE } from ksp::console
-use { sleep } from ksp::game
-use { format} from core::str
-use { abs, round, sqrt, max, min } from core::math
-use { vec3, Vec3, GlobalVector, GlobalPosition } from ksp::math
-use { yield, current_time, wait_while, wait_until } from ksp::game
-use { create_resource_transfer, FlowDirection, ResourceContainer, ResourceData, ResourceDefinition, ResourceTransfer } from ksp::resource
+use { yield, wait_while } from ksp::game
+use { format } from core::str
+use { sqrt, min, abs } from core::math
+use { Vec3 } from ksp::math
+use { create_resource_transfer, FlowDirection, ResourceContainer, ResourceData, ResourceTransfer } from ksp::resource
 use { SAVE_LOAD_CONTROL } from ksp::debug
 
-struct TankInfo(part_in: Part, container_data_in: ResourceContainer, body_pos_in: Vec3, resouce_name: string, stored_units_in: float, capacity_units_in: float) {
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Data types
+// ─────────────────────────────────────────────────────────────────────────────
+
+// One fuel tank, paired with its position in the vessel body frame so we can
+// tell whether it sits fore or aft of the centre of mass.
+struct TankInfo(
+    part_in: Part,
+    resource_data_in: ResourceContainer,
+    body_pos_in: Vec3,
+    resource_name_in: string,
+    stored_units_in: float,
+    capacity_units_in: float
+) {
     part: Part = part_in
-    resource_data: ResourceContainer  = container_data_in
+    resource_data: ResourceContainer = resource_data_in
     body_pos: Vec3 = body_pos_in
-    pos_z: float = body_pos_in.z
-    pos_x:float = body_pos_in.x
-    resoruce_name: string = resouce_name
+    pos_z: float = body_pos_in.z          // fore/aft — the axis we balance on
+    pos_x: float = body_pos_in.x          // left/right — used only to group rows
+    res_name: string = resource_name_in
     stored: float = stored_units_in
     capacity: float = capacity_units_in
     space: float = capacity_units_in - stored_units_in
 }
 
-impl TankInfo{
-    fn resource_name(self) -> string =
-        self.resource_data.list
-            .map(fn(r) -> r.resource.name)
-            .reduce("", fn(acc, name) -> acc + name)
-
-    fn stored_units(self) -> float =
-        self.resource_data.list
-            .map(fn(r) -> r.stored_units)
-            .reduce(0.0, fn(acc, u) -> acc + u)
-
-    fn capacity_units(self) -> float =
-        self.resource_data.list
-            .map(fn(r) -> r.capacity_units)
-            .reduce(0.0, fn(acc, u) -> acc + u)
-
+impl TankInfo {
+    // Mass of fuel currently in the tank.
     fn stored_total_mass(self) -> float =
         self.resource_data.stored_total_mass
 
+    // Mass of fuel the tank would hold if completely full.
     fn capacity_total_mass(self) -> float =
         self.resource_data.list
             .map(fn(r) -> r.capacity_units * r.resource.mass_per_unit)
             .reduce(0.0, fn(acc, m) -> acc + m)
 
+    // How much more fuel mass the tank can still accept.
     fn remaining_mass_capacity(self) -> float =
         self.capacity_total_mass() - self.stored_total_mass()
 }
 
+
+// A resource type and how much of its mass is currently aboard, used while
+// deciding which fuel to balance.
+struct FuelInfo(resource_name_in: string, resource_mass_in: float) {
+    resource_name: string = resource_name_in
+    resource_mass: float = resource_mass_in
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Finding fuel and tanks
+// ─────────────────────────────────────────────────────────────────────────────
+
 fn fuel_tank_parts(vessel: Vessel) -> Part[] = {
     const FuelTank = PartCategory.from_string("FuelTank")
     if (FuelTank.defined) {
-        return vessel.parts.filter(fn(p) -> p.part_category == FuelTank.value)
-    } else return []
+        vessel.parts.filter(fn(p) -> p.part_category == FuelTank.value)
+    } else []
 }
 
+
+// A part may list several resource entries. They are returned bundled together,
+// so we match against the concatenation of their names rather than any single
+// entry.
 fn find_part_resource_data(part_resources: ResourceContainer, resource_name: string) -> Option<ResourceContainer> = {
     let combined_name = ""
     for (data in part_resources.list) {
         combined_name += data.resource.name
         if (resource_name == combined_name) return Some(part_resources)
     }
-    return None()
+    None()
 }
 
-struct FuelInfo(resource_name_in: string, resource_mass_in: float) {
-    resource_name: string = resource_name_in
-    resource_mass: float = resource_mass_in
-}
 
+// Mass of the (non-excluded) fuel held in one part. Air, charge and
+// monopropellant are intentionally left out — we never want to trim with those.
 sync fn find_part_resource_mass(part: Part) -> Option<FuelInfo> = {
-    let container = part.resources
     const EXCLUDED = ["Intake Air", "Electric Charge", "Monopropellant"]
+    let container = part.resources
 
     if (container.list.is_empty) return None()
-    
+
     const first_name = container.list[0].resource.display_name
-    if (EXCLUDED.exists(fn(n) -> n == first_name)) {
-        return None()
-    }
+    if (EXCLUDED.exists(fn(n) -> n == first_name)) return None()
 
     let fuel_entries = container.list.filter(fn(d) -> d.capacity_units > 0.0 && d.stored_units > 0.0)
 
@@ -99,40 +122,16 @@ sync fn find_part_resource_mass(part: Part) -> Option<FuelInfo> = {
 }
 
 
-fn find_all_tanks(vessel: Vessel, fuel_type_name: string) -> TankInfo[] = {
-    let tanks : TankInfo[] = []
-    for (part in fuel_tank_parts(vessel)) {
-        let maybe_res_data = find_part_resource_data(part.resources, fuel_type_name)
-        if (maybe_res_data.defined) {
-            let res_data = maybe_res_data.value
-
-            let combined_capacity_units = 0.0
-            let combined_stored_units = 0.0
-            let combined_name = ""
-
-            for (r in 0..res_data.list.length) {
-                combined_capacity_units += res_data.list[r].capacity_units
-                combined_stored_units += res_data.list[r].stored_units
-                combined_name +=  res_data.list[r].resource.display_name
-            }
-            if (combined_capacity_units > 0.0) {
-                let body_pos = part.global_position.to_local(vessel.body_frame)
-                tanks += TankInfo(part, res_data, body_pos, combined_name, combined_stored_units, combined_capacity_units)
-            }
-        }
-        yield()
-    }
-    tanks
-}
-
-
+// Pick the resource we should balance with: the one carrying the most mass
+// across the whole vessel.
 fn find_best_resource(vessel: Vessel) -> Option<string> = {
     let fuels = fuel_tank_parts(vessel)
         .map(fn(m) -> find_part_resource_mass(m))
         .filter(fn(opt) -> opt.defined && opt.value.resource_mass > 0.0001)
         .map(fn(opt) -> opt.value)
 
-    let aggregated : FuelInfo[] = []
+    // Sum mass per resource name.
+    let aggregated: FuelInfo[] = []
     for (f in fuels) {
         let existing = aggregated.find(fn(a) -> a.resource_name == f.resource_name)
         if (existing.defined) {
@@ -147,147 +146,112 @@ fn find_best_resource(vessel: Vessel) -> Option<string> = {
 }
 
 
-fn calculate_fuel_mass_distribution(vessel: Vessel, relevant_tanks: TankInfo[]) -> (float, float) = {
-    if (relevant_tanks.is_empty) {
-        CONSOLE.print_line("Distribution: No tanks provided")
-        return (0.0, 0.0)
-    }
+// Every tank that holds the chosen fuel, wrapped with its body-frame position.
+fn find_all_tanks(vessel: Vessel, fuel_type_name: string) -> TankInfo[] = {
+    let tanks: TankInfo[] = []
+    for (part in fuel_tank_parts(vessel)) {
+        let maybe_res_data = find_part_resource_data(part.resources, fuel_type_name)
+        if (maybe_res_data.defined) {
+            let res_data = maybe_res_data.value
 
-    let vessel_com = vessel.global_center_of_mass.to_local(vessel.body_frame)
-    let threshold = 2.5
+            let combined_capacity_units = 0.0
+            let combined_stored_units = 0.0
+            let combined_name = ""
+            for (r in res_data.list) {
+                combined_capacity_units += r.capacity_units
+                combined_stored_units += r.stored_units
+                combined_name += r.resource.display_name
+            }
 
-    let relevant_tanks_in = relevant_tanks
-
-    let (fwd, back, neutral) = (0.0, 0.0, 0.0)
-    for (t in relevant_tanks_in) {
-        let dz = t.body_pos.z - vessel_com.z
-        let mass = t.stored_total_mass()
-        if (dz > threshold) {
-            fwd += mass
-        } else if (dz < -threshold) {
-            back += mass
-        } else {
-            neutral += mass
+            if (combined_capacity_units > 0.0) {
+                let body_pos = part.global_position.to_local(vessel.body_frame)
+                tanks += TankInfo(part, res_data, body_pos, combined_name, combined_stored_units, combined_capacity_units)
+            }
         }
+        yield()
     }
-
-    CONSOLE.print_line(format("Forward mass: {0:N3}t ", fwd) +
-                       format("Backward mass: {0:N3}t ", back) +
-                       format("Central mass: {0:N3}t ", neutral))
-
-    (fwd, back)
+    tanks
 }
 
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  Geometry
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Group tanks into fore/aft rows: tanks sharing (almost) the same left/right and
+// up/down position belong to one row, then each row is sorted front-to-back.
+//
+// This grouping is informational only — it lets us print a readable picture of
+// the tank layout. The transfer itself works from the flat tank list.
 fn group_tanks_into_rows(all_tanks: TankInfo[], row_xy_tolerance: float) -> TankInfo[][] = {
-    CONSOLE.print_line("Determining the fuel tanks geometry:")
     let rows: TankInfo[][] = []
-    let assigned_tanks: string[] = []
 
     for (tank in all_tanks) {
         let found_row = false
         for (idx in 0..rows.length) {
-             let row : TankInfo[] = rows[idx]
-             if (row.is_empty) { continue }
-             let ref_tank = row[0] 
-             let dx: float = tank.body_pos.x - ref_tank.body_pos.x
-             let dy: float = tank.body_pos.y - ref_tank.body_pos.y
-             if (sqrt(dx*dx + dy*dy) <= row_xy_tolerance) {
-                 row += [tank]
-                 rows[idx] = row
-                 assigned_tanks += [tank.part.id]
-                 found_row = true
-                 break
-             }
+            let row: TankInfo[] = rows[idx]
+            if (row.is_empty) { continue }
+            let ref_tank = row[0]
+            let dx: float = tank.body_pos.x - ref_tank.body_pos.x
+            let dy: float = tank.body_pos.y - ref_tank.body_pos.y
+            if (sqrt(dx*dx + dy*dy) <= row_xy_tolerance) {
+                row += [tank]
+                rows[idx] = row
+                found_row = true
+                break
+            }
         }
-        if (!found_row) {
-            rows += [[tank]]
-            assigned_tanks += [tank.part.id]
-        }
+        if (!found_row) rows += [[tank]]
         yield()
     }
+
     for (idx in 0..rows.length) {
         rows[idx] = rows[idx].sort_by(fn(r) -> r.pos_z)
     }
-    return rows
+    rows
 }
 
 
-fn select_tanks(rows: TankInfo[][]) -> TankInfo[][]= {
-    let  output: TankInfo[][] = []
-
-    if (rows.length > 0) {
-        let first_row_elements = rows[0] 
-        for (element_in_first_row in first_row_elements) { 
-            output += [[element_in_first_row]] 
-        }
-    } else {
-        return output
-    }
-
-    let following_rows: TankInfo[][] = []
-    if (rows.length > 1) {
-        for (i in 1..rows.length) {
-            following_rows += [rows[i]]
-        }
-    }
-
-    if (following_rows.is_empty) {
-        return output
-    }
-
-    let  lis1: TankInfo[][] = []
-    let  list2: TankInfo[][] = []
-
-    for (i in 0..following_rows.length) {
-        if (i % 2 == 0) {
-            lis1 += [following_rows[i]]
+// Split the fuel mass into three zones relative to the centre of mass: forward,
+// backward, and a central dead-band whose tanks are too close to the CoM to move
+// usefully.
+//
+// Central mass IS counted in the balance target (all three are returned). It must
+// be: on airframes where most of the fuel sits central, excluding it inverts the
+// result — the forward fuel alone already exceeds the movable-fuel target, so the
+// script drains fuel AFT and makes the plane tail-heavy, which is fatal for the
+// "nose-heavy for reentry" goal. Counting central means "X% of ALL fuel forward",
+// and when there is no aft fuel to move the rebalance simply leaves it nose-heavy.
+fn calculate_fuel_mass_distribution(all_tanks: TankInfo[], com_z: float, zone_threshold: float) -> (float, float, float) = {
+    let (forward_mass, backward_mass, central_mass) = (0.0, 0.0, 0.0)
+    for (tank in all_tanks) {
+        let dz = tank.body_pos.z - com_z
+        let mass = tank.stored_total_mass()
+        if (dz > zone_threshold) {
+            forward_mass += mass
+        } else if (dz < -zone_threshold) {
+            backward_mass += mass
         } else {
-            list2 += [following_rows[i]]
+            central_mass += mass
         }
     }
-
-    let  max_len = 0
-    let  rows_to_check_len: TankInfo[][] = []
-    for (r in lis1) { rows_to_check_len += [r] }
-    for (r in list2) { rows_to_check_len += [r] }
-
-    for (row in rows_to_check_len) {
-        if (row.length > max_len) {
-            max_len = row.length
-        }
-    }
-
-    for (i in 0..max_len) {
-        let  current: TankInfo[] = []
-        
-        if (lis1.length > 0) {
-            for (row_from_list1 in lis1) {
-                 if (i < row_from_list1.length) {
-                    current += [row_from_list1[i]]
-                    break
-                 }
-            }
-        }
-        
-        if (current.length < 2 && list2.length > 0) {
-            for (row_from_list2 in list2) {
-                if (i < row_from_list2.length) {
-                    current += [row_from_list2[i]]
-                    break
-                }
-            }
-        }
-        
-        if (current.length >= 2) {
-            output += [current]
-        } else if (current.length > 0) {
-        }
-    }
-    return output
+    CONSOLE.print_line(format(" Forward: {0:N3}t  ", forward_mass) +
+                       format("Backward: {0:N3}t  ", backward_mass) +
+                       format("Central: {0:N3}t", central_mass))
+    (forward_mass, backward_mass, central_mass)
 }
 
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  Transfer building
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Queue one resource entry into the transfer, capped at max_mass.
+//
+// Note on units: the transfer API wants an amount in *units*, but everywhere
+// else we reason in *mass* (so fore/aft balance is meaningful regardless of the
+// fuel's density). We therefore convert mass -> units (mass / mass_per_unit) at
+// this one boundary, and return the mass actually queued.
 fn add_tanks_with_limit(
     transfer: ResourceTransfer,
     entry: ResourceData,
@@ -299,9 +263,10 @@ fn add_tanks_with_limit(
     if (unit_mass <= 0.0) return 0.0
 
     let stored_mass = entry.stored_units * unit_mass
-    let cap_mass   = entry.capacity_units * unit_mass
-    let free_mass  = cap_mass - stored_mass
+    let cap_mass = entry.capacity_units * unit_mass
+    let free_mass = cap_mass - stored_mass
 
+    // Sending is limited by what's in the tank; receiving by what still fits.
     let allowed_mass = if (direction == FlowDirection.FLOW_OUTBOUND) {
         min(max_mass, stored_mass)
     } else {
@@ -309,12 +274,15 @@ fn add_tanks_with_limit(
     }
 
     if (allowed_mass > eps) {
-        transfer.add_resource(direction, entry, allowed_mass)
+        transfer.add_resource(direction, entry, allowed_mass / unit_mass)
         allowed_mass
     } else 0.0
 }
 
 
+// Queue a whole tank into the transfer, capped at tank_mass_limit. A tank can
+// bundle several resource entries; the limit is split across them in proportion
+// to each entry's share of the available mass.
 fn add_tank_resources_with_limit(
     transfer: ResourceTransfer,
     tank: TankInfo,
@@ -332,7 +300,6 @@ fn add_tank_resources_with_limit(
     if (ref_mass < eps) return 0.0
 
     let total_added = 0.0
-
     for (res in tank.resource_data.list) {
         let unit_mass = res.resource.mass_per_unit
         if (unit_mass <= eps) continue
@@ -342,30 +309,34 @@ fn add_tank_resources_with_limit(
         } else {
             (res.capacity_units * unit_mass) / ref_mass
         }
-
         if (share <= eps) continue
 
         let limit = share * tank_mass_limit
         let added = add_tanks_with_limit(transfer, res, direction, limit)
         total_added += added
     }
-
     total_added
 }
 
 
+// Build a single transfer that moves up to total_mass_limit of fuel in one
+// direction along the fore/aft axis.
+//
+//   move_forward = true   shift fuel toward the nose:
+//                         aft tanks (dz < 0) SEND, forward tanks (dz > 0) RECEIVE
+//   move_forward = false  shift fuel toward the tail:
+//                         forward tanks (dz > 0) SEND, aft tanks (dz < 0) RECEIVE
+//
+// Returns None if no usable sender/receiver pair was found.
 fn configure_mass_transfer(
-    vessel: Vessel,
-    rows: TankInfo[][],
-    total_mass_limit: float
+    all_tanks: TankInfo[],
+    com_z: float,
+    total_mass_limit: float,
+    zone_threshold: float,
+    move_forward: bool
 ) -> Option<ResourceTransfer> = {
-    CONSOLE.print_line(format("Configuring balanced mass transfer (limit {0:N3}t)", total_mass_limit))
-
     let eps = 0.0001
-    if (rows.is_empty || total_mass_limit < eps) {
-        CONSOLE.print_line("No rows to process.")
-        return None()
-    }
+    if (all_tanks.is_empty || total_mass_limit < eps) return None()
 
     let transfer = create_resource_transfer()
     let send_remaining = total_mass_limit
@@ -373,52 +344,35 @@ fn configure_mass_transfer(
     let send_count = 0
     let recv_count = 0
 
-    let com_z = vessel.global_center_of_mass.to_local(vessel.body_frame).z
-    let z_threshold = 2.5
+    for (tank in all_tanks) {
+        let dz = tank.body_pos.z - com_z
 
-    for (row_idx in 0..rows.length) {
-        let tanks = rows[row_idx]
-        CONSOLE.print_line(format(" Processing row {0} with {1} tank(s)...", [row_idx, tanks.length]))
+        let is_sender = if (move_forward) { dz < -zone_threshold } else { dz > zone_threshold }
+        let is_receiver = if (move_forward) { dz > zone_threshold } else { dz < -zone_threshold }
 
-        for (tank in tanks) {
-            if (send_remaining < eps && recv_remaining < eps) {
-                CONSOLE.print_line(" Both send and receive limits achieved.")
-                break
+        if (is_sender && send_remaining > eps) {
+            let tank_can_send = tank.stored_total_mass()
+            let limit = min(send_remaining, tank_can_send)
+            let added = add_tank_resources_with_limit(transfer, tank, FlowDirection.FLOW_OUTBOUND, limit)
+            if (added > eps) {
+                send_remaining -= added
+                send_count += 1
             }
-
-            let dz = tank.body_pos.z - com_z
-
-            if (dz < -z_threshold && send_remaining > eps) {
-                let tank_can_send = tank.stored_total_mass()
-                let limit = min(send_remaining, tank_can_send)
-                let added = add_tank_resources_with_limit(transfer, tank, FlowDirection.FLOW_OUTBOUND, limit)
-
-                if (added > eps) {
-                    send_remaining -= added
-                    send_count += 1
-                }
+        } else if (is_receiver && recv_remaining > eps) {
+            let tank_can_recv = tank.remaining_mass_capacity()
+            let limit = min(recv_remaining, tank_can_recv)
+            let added = add_tank_resources_with_limit(transfer, tank, FlowDirection.FLOW_INBOUND, limit)
+            if (added > eps) {
+                recv_remaining -= added
+                recv_count += 1
             }
-
-            else if (dz > z_threshold && recv_remaining > eps) {
-                let tank_can_recv = tank.remaining_mass_capacity()
-                let limit = min(recv_remaining, tank_can_recv)
-                let added = add_tank_resources_with_limit(transfer, tank, FlowDirection.FLOW_INBOUND, limit)
-
-                if (added > eps) {
-                    recv_remaining -= added
-                    recv_count += 1
-                }
-            }
-            yield()
         }
-
-        if (send_remaining < eps && recv_remaining < eps) break
+        yield()
     }
 
-    CONSOLE.print_line("--- Transfer Configuration Summary ---")
-    CONSOLE.print_line(format(" Transfer Limit: {0:N3}t", total_mass_limit))
     CONSOLE.print_line(format(" Senders: {0}, Receivers: {1}", [send_count, recv_count]))
 
+    // A transfer needs at least one tank on each side to do anything.
     if (send_count > 0 && recv_count > 0) {
         Some(transfer)
     } else {
@@ -428,10 +382,14 @@ fn configure_mass_transfer(
 }
 
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  Rebalance loop
+// ─────────────────────────────────────────────────────────────────────────────
+
 pub fn fuel_rebalance(
-    vessel: Vessel, 
-    forward_fuel_percentage: float, 
-    transfer_threshold: float, 
+    vessel: Vessel,
+    forward_fuel_percentage: float,
+    transfer_threshold: float,
     quicksave: bool
 ) -> Result<Unit, string> = {
 
@@ -442,53 +400,98 @@ pub fn fuel_rebalance(
     }
 
     let best_fuel = find_best_resource(vessel)
-    if (best_fuel.defined) {
-        CONSOLE.print_line("Selected: " + best_fuel.value)
-
-        let mytanks : TankInfo[] = find_all_tanks(vessel, best_fuel.value)
-        let tankrows : TankInfo[][] = group_tanks_into_rows(mytanks, 0.1)
-
-        for (r in 0..tankrows.length) {
-            CONSOLE.print_line("Fuel tanks row: " + r.to_string())
-            let current_row = tankrows[r]
-
-            if (!current_row.is_empty) {
-                CONSOLE.print_line(" -> : " + current_row.length.to_string())
-                for (t in 0..current_row.length) {
-                     CONSOLE.print_line(format("x:{0:N2} ", current_row[t].pos_x) + format("z:{0:N2} ", current_row[t].pos_z))
-                }
-            } else {
-                CONSOLE.print_line(" -> Empty")
-            }
-        }
-        let (forward_mass, backward_mass) = calculate_fuel_mass_distribution(vessel, mytanks)
-        let rebalance = ((forward_mass + backward_mass) / 100.0) * forward_fuel_percentage - forward_mass
-
-        if (rebalance < transfer_threshold) { 
-            CONSOLE.print_line("Already nose-heavy.")
-        } else {
-            let configured_tanks = select_tanks(tankrows)
-            let rt = configure_mass_transfer(vessel, configured_tanks, rebalance)
-
-            if (rt.defined) {
-                const r: ResourceTransfer = rt.value
-                r.start()
-                wait_while(fn() -> r.is_running)
-                r.stop()
-                CONSOLE.print_line("Transfer complete.")
-            }
-        }
+    if (!best_fuel.defined) {
+        CONSOLE.print_line("No fuel found.")
+        return Ok({})
     }
+    CONSOLE.print_line("Selected: " + best_fuel.value)
+
+    let mytanks: TankInfo[] = find_all_tanks(vessel, best_fuel.value)
+    if (mytanks.is_empty) {
+        CONSOLE.print_line("No tanks found.")
+        return Ok({})
+    }
+
+    // Tank layout is fixed, so print the geometry once for reference.
+    let tankrows: TankInfo[][] = group_tanks_into_rows(mytanks, 0.1)
+    CONSOLE.print_line(format("Fuel tank rows: {0}", tankrows.length))
+    for (r in 0..tankrows.length) {
+        let current_row = tankrows[r]
+        CONSOLE.print_line(format(" Row {0}: ", r) +
+                           format("{0} tank(s)  ", current_row.length) +
+                           format("x:{0:N2}", current_row[0].pos_x))
+    }
+
+    const zone_threshold = 2.5     // fore/aft dead-band around the CoM, metres
+    const max_passes = 20          // safety cap on the convergence loop
+    const progress_eps = 0.001     // smallest improvement we treat as progress
+
+    let prev_rebalance = 1.0e9
+    let pass_number = 0
+
+    while (pass_number < max_passes) {
+        // Re-measure: the CoM has moved since the last transfer.
+        let com_z = vessel.global_center_of_mass.to_local(vessel.body_frame).z
+        let (forward_mass, backward_mass, central_mass) = calculate_fuel_mass_distribution(mytanks, com_z, zone_threshold)
+
+        // Target: forward_fuel_percentage of ALL the fuel should sit forward of the
+        // CoM. Central fuel IS counted — see the note on calculate_fuel_mass_distribution.
+        //   rebalance > 0 -> too little fuel forward, move toward the nose
+        //   rebalance < 0 -> too much fuel forward, move toward the tail
+        let total_fuel = forward_mass + backward_mass + central_mass
+        let rebalance = total_fuel / 100.0 * forward_fuel_percentage - forward_mass
+        let needed = abs(rebalance)
+        let direction_label = if (rebalance > 0.0) { "forward" } else { "aft" }
+
+        CONSOLE.print_line(format("Pass {0}: ", pass_number) +
+                           format("CoM.z {0:N2}  ", com_z) +
+                           format("move {0:N3}t ", needed) +
+                           direction_label)
+
+        // Stop condition 1 — close enough.
+        if (needed < transfer_threshold) {
+            CONSOLE.print_line("Target reached.")
+            break
+        }
+
+        // Stop condition 2 — the last pass barely changed anything.
+        if (prev_rebalance - needed < progress_eps) {
+            CONSOLE.print_line("No further progress.")
+            break
+        }
+
+        let move_forward = rebalance > 0.0
+        let rt = configure_mass_transfer(mytanks, com_z, needed, zone_threshold, move_forward)
+
+        // Stop condition 3 — nothing left that can send or receive.
+        if (!rt.defined) {
+            CONSOLE.print_line("No transfer possible.")
+            break
+        }
+
+        const r: ResourceTransfer = rt.value
+        r.start()
+        wait_while(fn() -> r.is_running)
+        r.stop()
+
+        prev_rebalance = needed
+        pass_number += 1
+        yield()
+    }
+
+    if (pass_number >= max_passes) {
+        CONSOLE.print_line("Max passes reached.")
+    }
+    CONSOLE.print_line("Rebalance complete.")
+    Ok({})
 }
 
 
 pub fn main_flight(
-    vessel: Vessel, 
-    forward_fuel_percentage: float = 65.0, 
-    transfer_threshold: float = 0.4, 
-    quicksave: bool = true
+    vessel: Vessel,
+    forward_fuel_percentage: float = 65.0,
+    transfer_threshold: float = 0.4,
+    quicksave: bool = false
 ) -> Result<Unit, string> = {
-
-    let result = fuel_rebalance(vessel, forward_fuel_percentage, transfer_threshold, quicksave)
-    result
+    fuel_rebalance(vessel, forward_fuel_percentage, transfer_threshold, quicksave)
 }
