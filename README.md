@@ -22,7 +22,7 @@ Displays "center of mass" and "center of lift" in flight
 Uses PIDLoops to launch the SSTO for LKO
 
 ### ssto_landing_test
-Lands an SSTO from LKO back at KSC - and more.
+Lands an SSTO from LKO back at KSC - and more
 
 ### ssto_rebalance
 Makes SSTO nose-heavy by automatically transferring fuel
