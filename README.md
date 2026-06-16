@@ -16,16 +16,16 @@ Copy ```*.to2``` scripts to ```<KSP2 Folder>\BepInEx\plugins\KontrolSystem2\to2\
 Start from KontrolSystem2 interface.
 
 ### ssto_com_col_inflight
-Displays "center of mass" and "center of lift" in flight
+Displays the center of mass and center of lift during flight
 
 ### ssto_launch
-Uses PIDLoops to launch the SSTO for LKO
+Uses PIDloops to launch the SSTO into LKO
 
 ### ssto_landing
 Lands an SSTO from LKO back at KSC - and more
 
 ### ssto_rebalance
-Makes SSTO nose-heavy by automatically transferring fuel
+Moves the center of mass by automatically transferring fuel
 
 ---
 [![APACHE 2.0](https://img.shields.io/badge/License-Apache%202.0-brightgreen.svg?longCache=true&style=for-the-badge)](LICENSE)
