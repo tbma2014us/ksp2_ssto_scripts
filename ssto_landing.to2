@@ -15,7 +15,6 @@
 // * This script is not universal (yet) and needs to be tuned for each specific airframe
 // * It's not hard, it's not rocket science
 
-
 use { AutopilotMode, Vessel, VesselSituation, DeltaVSituation, ParachuteDeployMode } from ksp::vessel
 use { CONSOLE } from ksp::console
 use { CONSOLE_WINDOW, open_window, Align, screen_size } from ksp::ui
