@@ -12,8 +12,9 @@
 // * AoA-limited wings, too-forward CoM, or weak pitch authority can make the plane sink too fast and fail to flare
 // * Those airframes need leftover fuel so the engines can fly a powered final
 // * The script combines multiple landing aids: drogue parachutes, airbrakes, wheel brakes, and, as a last resort, powered flight
-// * This script is not universal (yet) and need to be tuned for a specific airframe
+// * This script is not universal (yet) and needs to be tuned for each specific airframe
 // * It's not hard, it's not rocket science
+
 
 use { AutopilotMode, Vessel, VesselSituation, DeltaVSituation, ParachuteDeployMode } from ksp::vessel
 use { CONSOLE } from ksp::console
@@ -24,6 +25,7 @@ use { clamp, floor, abs, max, min, sqrt, atan2, asin, cos, sin, cos_deg, sin_deg
 use { format } from core::str
 use { Body, GeoCoordinates } from ksp::orbit
 use { Vec3, vec3, vec2 } from ksp::math
+use { MAIN_LOG } from ksp::debug
 use { exec_next_node } from std::vac
 use { land_deorbit_delta_v, land_time_to_longitude } from std::land::lib
 use { angle_to_360, remove_all_nodes } from std::utils
@@ -32,9 +34,24 @@ use { control_steering } from std::control::steering
 use { fuel_rebalance } from ssto_rebalance
 use core::background as background
 
-sync fn con_log(message: string) -> Unit =
+const RUNWAY_09L_LAT: float = -0.627667441479177
+const RUNWAY_09L_LON: float = -75.265870967889
+const RUNWAY_09L_HEADING: float = 90.0
+
+sync fn timestamp() -> string = {
+    let t  = current_time() % 21600.0
+    let hh = floor(t / 3600.0)
+    let mm = floor((t % 3600.0) / 60.0)
+    let ss = floor(t % 60.0)
+    format("[{0,2:00}:{1,2:00}:{2,2:00}]", [hh, mm, ss])
+}
+
+sync fn con_log(message: string) -> Unit = {
+    const current_row = CONSOLE.cursor_row
+    CONSOLE.clear_line(current_row)
     CONSOLE.print_line($"{timestamp()} {message}")
-    
+}
+
 fn status_line(msg: string) -> Unit = {
     CONSOLE.move_cursor(9999, 0)
     const bottom_row = CONSOLE.cursor_row
@@ -53,6 +70,17 @@ fn offset_geo(body: Body, lat: float, lon: float, bearing_deg: float, distance_m
     body.geo_coordinates(lat2 * RAD_TO_DEG, lon2 * RAD_TO_DEG)
 }
 
+fn surface_distance(vessel: Vessel, target: GeoCoordinates) -> float = {
+    let r        = vessel.main_body.radius
+    let gc       = vessel.geo_coordinates
+    let dlat     = (target.latitude  - gc.latitude)  * DEG_TO_RAD
+    let dlon     = (target.longitude - gc.longitude) * DEG_TO_RAD
+    let lat1     = gc.latitude      * DEG_TO_RAD
+    let lat2     = target.latitude  * DEG_TO_RAD
+    let a        = sin(dlat / 2.0) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2.0) ** 2
+    r * 2.0 * atan2(sqrt(a), sqrt(1.0 - a))
+}
+
 fn norm_angle_deg(angle: float) -> float = {
     let a = angle
     while (a > 180.0) {
@@ -69,6 +97,7 @@ fn roll_to_level(vessel: Vessel) -> float = {
 
     return norm_angle_deg(-roll)
 }
+
 
 fn roll_to_bank(vessel: Vessel, target_bank: float) -> float = {
     let roll = norm_angle_deg(vessel.pitch_yaw_roll.z)
@@ -141,15 +170,10 @@ pub sync fn max_temp_fraction(vessel: Vessel) -> float =
         .reduce(0.0, fn(acc, f) -> max(acc, f))
 
 pub fn enable_air_breathing(vessel: Vessel) -> Unit = {
-    for (intake in vessel.air_intakes) {
-        intake.toogle_intake = true
-    }
-    for (eng in vessel.engines) {
-        if (eng.engine_modes.exists(fn(m) -> m.name == "Air Breathing") &&
-            eng.current_engine_mode.name != "Air Breathing") {
-            eng.change_mode("Air Breathing")
-        }
-    }
+    vessel.air_intakes.map(fn(i) -> i.toogle_intake = true)
+    vessel.engines
+        .filter(fn(e) -> e.engine_modes.exists(fn(m) -> m.name == "Air Breathing") && e.current_engine_mode.name != "Air Breathing")
+        .map(fn(e) -> e.change_mode("Air Breathing"))
 }
 
 pub fn deploy_all_parachutes(vessel: Vessel) -> Unit = {
@@ -165,8 +189,9 @@ pub fn disable_engines(vessel: Vessel) -> Unit = {
     vessel.air_intakes.map(fn(i) -> i.toogle_intake = false)
 }
 
+
 pub fn ssto_prepare_deorbit(vessel: Vessel, landing_site: GeoCoordinates) -> Result<Unit> = {
-    CONSOLE.print_line("=== ssto_prepare_deorbit ===")
+    con_log("=== ssto_prepare_deorbit ===")
     fuel_rebalance(vessel, 65.0, 0.3, false)
 
     const deorbit_radius        = vessel.main_body.radius - 3000
@@ -194,44 +219,21 @@ pub fn ssto_prepare_deorbit(vessel: Vessel, landing_site: GeoCoordinates) -> Res
         const n_dv = vel.magnitude * sin_deg(inc)
         const p_dv = vel.magnitude * (cos_deg(inc) - 1)
         if (n_dv * n_dv + p_dv * p_dv > 0.1) {
-            CONSOLE.print_line($"Plane change: {inc_diff:N2}° — {n_dv:N1} m/s anti-normal, {p_dv:N1} m/s prograde.")
+            con_log($"Plane change: {inc_diff:N2}° — {n_dv:N1} m/s anti-normal, {p_dv:N1} m/s prograde.")
             vessel.maneuver.add(current_time() + land_time_to_longitude(vessel, plane_change_longitude + phi_inc_maneuver), 0, -n_dv, p_dv)?
             exec_next_node(vessel)?
         }
     } else {
-        CONSOLE.print_line($"Plane change skipped — {inc_diff:N2}° within 1.5° tolerance.")
+        con_log($"Plane change skipped — {inc_diff:N2}° within 1.5° tolerance.")
     }
 
     const deorbit_dv = land_deorbit_delta_v(vessel, deorbit_radius - vessel.main_body.radius)
-    CONSOLE.print_line($"Deorbit burn: {deorbit_dv:N1} m/s retrograde.")
+    con_log($"Deorbit burn: {deorbit_dv:N1} m/s retrograde.")
     vessel.maneuver.add(current_time() + land_time_to_longitude(vessel, deorbit_longitude + phi), 0, 0, deorbit_dv)?
     exec_next_node(vessel)?
 
     Ok({})
 }
-
-sync fn timestamp() -> string = {
-    let t  = current_time() % 21600.0
-    let hh = floor(t / 3600.0)
-    let mm = floor((t % 3600.0) / 60.0)
-    let ss = floor(t % 60.0)
-    format("[{0,2:00}:{1,2:00}:{2,2:00}]", [hh, mm, ss])
-}
-
-fn surface_distance(vessel: Vessel, target: GeoCoordinates) -> float = {
-    let r        = vessel.main_body.radius
-    let gc       = vessel.geo_coordinates
-    let dlat     = (target.latitude  - gc.latitude)  * DEG_TO_RAD
-    let dlon     = (target.longitude - gc.longitude) * DEG_TO_RAD
-    let lat1     = gc.latitude      * DEG_TO_RAD
-    let lat2     = target.latitude  * DEG_TO_RAD
-    let a        = sin(dlat / 2.0) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2.0) ** 2
-    r * 2.0 * atan2(sqrt(a), sqrt(1.0 - a))
-}
-
-const RUNWAY_09L_LAT: float = -0.62766870196000
-const RUNWAY_09L_LON: float = -75.298537244905
-const RUNWAY_09L_HEADING: float = 90.0
 
 struct RunwayGuidanceState(
     dir_dist: float,
@@ -261,6 +263,8 @@ fn runway_guidance_state(vessel: Vessel, runway_geo: GeoCoordinates, rwy_heading
     let along_track = (runway_geo.longitude - gc.longitude) * m_per_deg_lon
 
     let dist = runway_dist
+
+
 
     let correction_gain =
         if (along_track > 80000.0) {
@@ -298,6 +302,7 @@ fn runway_guidance_state(vessel: Vessel, runway_geo: GeoCoordinates, rwy_heading
     let target_heading =
         angle_to_360(rwy_heading + LOCALIZER_SIGN * correction)
 
+
     let heading_error = norm_angle_deg(target_heading - vessel.pitch_yaw_roll.y)
 
     return RunwayGuidanceState(
@@ -308,6 +313,7 @@ fn runway_guidance_state(vessel: Vessel, runway_geo: GeoCoordinates, rwy_heading
         heading_error
     )
 }
+
 
 pub struct LandingStrip(
     s_name: string, s_display: string, s_lat: float, s_lon: float, s_heading: float, s_body: Body
@@ -350,15 +356,40 @@ fn select_landing_strip(vessel: Vessel) -> LandingStrip = {
     w.close()
 
     if      (selected.value == 1) { LandingStrip("KSC-09R", "KSC Runway 09R",  -0.65073148191674, -75.296690328232, 90.0, body) }
-    else if (selected.value == 2) { LandingStrip("Island",  "Island Airfield", -1.540833,         -71.909722,       90.0, body) }
+    else if (selected.value == 2) { LandingStrip("Island",  "Island Airfield", -1.4374648050202,  -71.9133467608241, 90.6, body) }
     else                          { LandingStrip("KSC-09L", "KSC Runway 09L",  RUNWAY_09L_LAT,     RUNWAY_09L_LON,   RUNWAY_09L_HEADING, body) }
 }
 
-pub fn main_flight(vessel: Vessel, overshoot: float = 475.0, use_engines: bool = true) -> Result<Unit> = {
+const EG_ALONG: float[]  = [120000.0, 100000.0, 80000.0, 60000.0, 50000.0, 40000.0, 30000.0, 25000.0, 20000.0, 15000.0, 12000.0, 10000.0, 8000.0, 6000.0, 4000.0, 2000.0, 1000.0]
+const EG_REQ_EH: float[] = [92246.0, 71088.0, 45581.0, 26091.0, 17626.0, 11494.0, 10897.0, 6403.0, 7195.0, 5584.0, 4587.0, 4079.0, 3430.0, 3213.0, 3317.0, 3538.0, 3535.0]
+const FLOAT_OFFSET: float    = 3626.0
+const E_RESCUE_SINK: float   = -30.0
+const E_RESCUE_AGL: float    = 600.0
+const E_LOW_COMMIT_AGL: float = 150.0
+const E_DEADBAND_FRAC: float = 0.12
+const E_RESCUE_PITCH: float  = 12.0
+const E_LOW_THR: float       = 0.5
+const E_BRAKE_FLOOR: float = 300.0
+
+sync fn interp_req_eh(along_q: float) -> float = {
+    const q = along_q
+    const n = EG_ALONG.length
+    const above = EG_ALONG.filter(fn(a) -> a >= q).length
+    if (above <= 0) { return EG_REQ_EH[0] }
+    if (above >= n) { return EG_REQ_EH[n - 1] }
+    const i  = above - 1
+    const a0 = EG_ALONG[i]
+    const a1 = EG_ALONG[i + 1]
+    const e0 = EG_REQ_EH[i]
+    const e1 = EG_REQ_EH[i + 1]
+    const frac = (q - a0) / (a1 - a0)
+    e0 + frac * (e1 - e0)
+}
+
+pub fn main_flight(vessel: Vessel, overshoot: float = 480.0, use_engines: bool = true, aim_offset: float = 1700.0) -> Result<Unit> = {
     CONSOLE.clear()
     CONSOLE_WINDOW.open()
     CONSOLE_WINDOW.size = vec2(700, 400)
-    let console_row = CONSOLE.cursor_row
 
     const body    = vessel.main_body
 
@@ -396,11 +427,10 @@ pub fn main_flight(vessel: Vessel, overshoot: float = 475.0, use_engines: bool =
                 entry_distance_m
             )
 
-        CONSOLE.print_line(
-            $"Deorbit target: {overshoot:N0} km uprange of {strip.display}."
-        )
+        con_log($"Deorbit target: {overshoot:N0} km uprange of {strip.display}.")
 
 ssto_prepare_deorbit(vessel, entry_geo)?
+
 
         vessel.autopilot.enabled = true
         vessel.autopilot.mode    = AutopilotMode.Autopilot
@@ -421,6 +451,7 @@ ssto_prepare_deorbit(vessel, entry_geo)?
         wait_until(fn() -> current_warp_rate() == 1.0)
     }
 
+    MAIN_LOG.truncate()
     con_log("Atmosphere reached. Reentry phase.")
 
     set_warp_index(0)
@@ -446,9 +477,9 @@ ssto_prepare_deorbit(vessel, entry_geo)?
     let roll_pid = pid_loop(0.04, 0.0, 0.012, -1.0, 1.0)
     roll_pid.setpoint = 0.0
 
+    let last_log_time = current_time() - 2.0
     let reentry_done  = false
     con_log("Reentry")
-    console_row = CONSOLE.cursor_row
 
     while (!reentry_done) {
         let t       = current_time()
@@ -459,6 +490,9 @@ ssto_prepare_deorbit(vessel, entry_geo)?
         let dist    = surface_distance(vessel, ref_geo)
         let pitch   = vessel.pitch_yaw_roll.x
         let roll    = norm_angle_deg(vessel.pitch_yaw_roll.z)
+        let hdg     = vessel.pitch_yaw_roll.y
+        let rho     = body.atmosphere_density(alt_asl)
+        let q       = 0.5 * rho * hspd * hspd
         let thermal = max_temp_fraction(vessel)
         let fpa     = if (hspd > 10.0) { atan2(vspd, hspd) * RAD_TO_DEG } else { 0.0 }
         let aoa     = pitch - fpa
@@ -479,6 +513,13 @@ ssto_prepare_deorbit(vessel, entry_geo)?
 
         status_line($"[REN] Dist:{dist/1000,5:N1}km  Alt:{alt_agl/1000,4:N1}km  Spd:{hspd,5:N0}  Thm:{thermal,4:N2}  AoA:{aoa,5:N1}  Glide:{glide,5:N1}  Ptch:{target_pitch_ren,4:N0}  ")
 
+        const brk = if (vessel.actions.brakes) { 1 } else { 0 }
+        if (t - last_log_time >= 1.0) {
+            last_log_time = t
+
+            MAIN_LOG.log($"time={t:F0},dist={dist:F0},alt={alt_asl:F0},agl={alt_agl:F0},hspd={hspd:F0},vspd={vspd:F1},spd={vessel.surface_velocity.magnitude:F0},pitch={pitch:F2},roll={roll:F2},hdg={hdg:F1},aoa={aoa:F2},thermal={thermal:F3},brakes={brk},q={q:F0},rho={rho:F4},glide={glide:F2},mode=REN")
+        }
+
         if (hspd < 1500.0 && thermal < 0.65) { reentry_done = true }
 
         sleep(0.05)
@@ -486,7 +527,6 @@ ssto_prepare_deorbit(vessel, entry_geo)?
 
     vessel.actions.brakes = false
     con_log("Reentry complete. Gliding east.")
-    console_row = CONSOLE.cursor_row
 
     con_log("Rebalancing fuel aft for glide (38% fwd).")
     fuel_rebalance(vessel, 38.0, 0.3, false)
@@ -498,24 +538,23 @@ ssto_prepare_deorbit(vessel, entry_geo)?
     const THROTTLE_RAMP: float = 0.5
     const THROTTLE_K: float    = 0.10
     const GEAR_ALT: float      = 800.0
+    const SPLASH_COMMIT_AGL: float = 2500.0
+    const DITCH_DROGUE_ALT: float  = 1200.0
     const FLARE_AGL_M: float   = 40.0
     const AERO_BRAKE_AGL: float = 20.0
     const FLARE_PITCH_DEG: float = 15.0
-    const HOLD_V: float        = 650.0
-    const HOLD_DIST: float     = 1000.0
-    const HOLD_THR_BASE: float = 0.12
-    const HOLD_THR_K: float    = 0.006
-    const HOLD_THR_CAP: float  = 0.45
-    const HOLD_VS_K: float     = 0.04
+    const FLOAT_BRAKE_AGL: float   = 300.0
+    const FLOAT_BRAKE_ALONG: float = 1500.0
+    const FLOAT_BRAKE_HSPD: float  = 90.0
     vessel.actions.gear = false
+    let last_polar_log = current_time() - 1.0
     let probe_start_t  = -1.0
     let drogue_deployed = false
-    let hold_active     = false
-    let hold_done       = false
-    let hold_start_along = 0.0
     let pwr_latched     = false
     const LOS_RANGE: float = 15000.0
     const LOS_MIN_DIST: float = 2500.0
+    const GS_RANGE: float    = 40000.0
+    const GS_MAX_SINK: float = 50.0
     let safe_slope = 89.0
     let los_busy   = false
     let los_task   = background::run(fn() -> 89.0)
@@ -526,6 +565,10 @@ ssto_prepare_deorbit(vessel, entry_geo)?
     let td_along       = 0.0
     let td_cross       = 0.0
     let td_dist        = 0.0
+    let last_e_mode = ""
+    let e_committed = "TRACK"
+    let ab_state    = false
+    let ditching = false
     let gliding = true
     while (gliding) {
         let t     = current_time()
@@ -538,8 +581,51 @@ ssto_prepare_deorbit(vessel, entry_geo)?
             disable_engines(vessel)
             con_log("Touchdown — engines DISABLED.")
         }
+        let roll  = norm_angle_deg(vessel.pitch_yaw_roll.z)
+        let v     = sqrt(hspd * hspd + vspd * vspd)
+        let pitch = vessel.pitch_yaw_roll.x
+        let fpa   = if (hspd > 10.0) { atan2(vspd, hspd) * RAD_TO_DEG } else { 0.0 }
+        let aoa   = pitch - fpa
+        let rho   = body.atmosphere_density(alt)
+        let drag  = total_drag(vessel)
+        let lift  = total_lift(vessel)
+        let ld    = if (drag > 1.0) { lift / drag } else { 0.0 }
+        let glide = if (abs(vspd) > 0.5) { hspd / abs(vspd) } else { 0.0 }
+        let dq    = vessel.dynamic_pressure_kpa
+        let mach  = vessel.mach_number
+        let mass  = vessel.mass
+
         let g    = runway_guidance_state(vessel, ref_geo, strip.heading)
         let dist = g.dist
+
+        if (!ditching && (g.along_track < 0.0 || ref_alt < 0.0)
+            && alt < SPLASH_COMMIT_AGL && vessel.geo_coordinates.terrain_height < 0.0) {
+            ditching = true
+            disable_engines(vessel)
+            vessel.actions.gear = false
+            vessel.actions.brakes = true
+            con_log("DITCH: open water below, no runway — engines off, gear up, splashing.")
+        }
+        if (ditching) {
+            const ditch_pitch = if (alt < 120.0) { clamp(6.0 + (0.0 - vspd) * 0.3, 6.0, 16.0) } else { 6.0 }
+            vessel.autopilot.enabled = true
+            vessel.autopilot.mode    = AutopilotMode.Autopilot
+            vessel.autopilot.target_orientation = vessel.heading_direction(g.target_heading, ditch_pitch, 0.0).vector
+            vessel.override_input_roll(0.0)
+            vessel.pilot_input.override_main_throttle = Some(0.0)
+            if (!drogue_deployed && alt < DITCH_DROGUE_ALT && hspd < 460.0) {
+                deploy_all_parachutes(vessel)
+                drogue_deployed = true
+                con_log("DITCH: drogues deployed (soften the splash).")
+            }
+            status_line($"[DITCH] V:{hspd:F0}  alt:{alt/1000:F1}km  vspd:{vspd:F0}  agl:{scenery_agl:F0}")
+            if (vessel.situation == VesselSituation.Splashed) {
+                con_log("Splashed down — ditch complete.")
+                gliding = false
+            }
+            sleep(0.05)
+            continue
+        }
 
         if (los_busy && los_task.is_completed) {
             if (los_task.is_success) { safe_slope = los_task.result }
@@ -578,50 +664,56 @@ ssto_prepare_deorbit(vessel, entry_geo)?
         let in_pwr = pwr_latched
         let powered_s = if (probe_start_t >= 0.0) { t - probe_start_t } else { 0.0 }
 
-        if (use_engines && !hold_done && !hold_active && hspd <= HOLD_V && hspd > POWERED_ENGAGE_V) {
-            hold_active = true
-            hold_start_along = g.along_track
-            enable_air_breathing(vessel)
-            ab_enabled = true
-            probe_start_t = t
-            con_log($"Ideal-glide hold START at {hspd:F0} m/s, {g.along_track / 1000.0:F1} km out.")
+        let g_body = body.grav_parameter / ((body.radius + alt) * (body.radius + alt))
+        let e_h    = scenery_agl + (v * v) / (2.0 * g_body)
+        let req_eh = interp_req_eh(g.along_track)
+        let e_err  = e_h - req_eh
+        let e_dead = max(E_DEADBAND_FRAC * req_eh, 300.0)
+        let e_band =
+            if (e_err > e_dead) { "TOO_HIGH" }
+            else if (e_err < 0.0 - e_dead) { "TOO_LOW" }
+            else if (e_err < 0.5 * e_dead && e_err > 0.0 - 0.5 * e_dead) { "TRACK" }
+            else { e_committed }
+        e_committed = e_band
+        let e_mode =
+            if (touched_down) { "TOUCHDOWN" }
+            else if (scenery_agl < E_LOW_COMMIT_AGL) { "LOW_COMMIT" }
+            else if (scenery_agl < E_RESCUE_AGL && vspd < E_RESCUE_SINK) { "SINK_RESCUE" }
+            else { e_band }
+        if (e_mode != last_e_mode) {
+            last_e_mode = e_mode
+            con_log($"[ENERGY] {e_mode} @ {g.along_track/1000:F1}km  e_h {e_h:F0}/{req_eh:F0}  dE {e_err:F0}     ")
         }
-        if (hold_active && (hold_start_along - g.along_track) >= HOLD_DIST) {
-            hold_active = false
-            hold_done = true
-            con_log("Ideal-glide hold DONE — resume normal descent.")
-        }
-        let hold_gain  = HOLD_VS_K * clamp((250.0 / max(hspd, 50.0)) ** 2, 0.15, 1.0)
-        let hold_thr   = clamp(HOLD_THR_BASE + HOLD_THR_K * (HOLD_V - hspd), 0.0, HOLD_THR_CAP)
-        let hold_pitch = clamp(GLIDE_PITCH_DEG + (0.0 - vspd) * hold_gain, -4.0, 8.0)
 
         let sched_sink =
             if (alt > 2000.0) { -40.0 }
             else if (alt > 600.0) { -20.0 }
             else if (alt > 200.0) { -10.0 }
             else { -4.0 }
+        let gs_dist   = g.along_track - aim_offset
+        let gs_active = gs_dist > 50.0 && g.along_track < GS_RANGE
+        let gs_sink   = clamp(0.0 - hspd * (alt - ref_alt) / max(gs_dist, 50.0), 0.0 - GS_MAX_SINK, 2.0)
+        let base_sink = if (gs_active) { gs_sink } else { sched_sink }
         const ssr     = safe_slope * DEG_TO_RAD
         let s_ss      = sin(ssr)
         let c_ss      = cos(ssr)
         let cdiv      = max(c_ss, 0.15)
         let los_active  = g.along_track > LOS_MIN_DIST && g.along_track < LOS_RANGE && safe_slope < 80.0
         let los_cap     = clamp(0.0 - hspd * s_ss / cdiv, -45.0, 8.0)
-        let target_sink = if (los_active) { max(sched_sink, los_cap) } else { sched_sink }
-        let los_binding = los_active && los_cap > sched_sink + 0.5
+        let target_sink = if (los_active) { max(base_sink, los_cap) } else { base_sink }
+        let los_binding = los_active && los_cap > base_sink + 0.5
         let hspd_safe   = max(hspd, 50.0)
         let spd_ratio   = 250.0 / hspd_safe
         let spd_norm    = clamp(spd_ratio * spd_ratio, 0.15, 1.0)
         let los_pitch   = clamp(GLIDE_PITCH_DEG + (target_sink - vspd) * PITCH_K_LOS * spd_norm, 2.0, 14.0)
         let spool_cap = clamp(powered_s * THROTTLE_RAMP, 0.0, 1.0)
         let sink_thr  = clamp(THROTTLE_K * (target_sink - vspd), 0.0, 1.0)
-        let throttle  = if (touched_down || !use_engines) { 0.0 } else if (hold_active) { hold_thr } else if (in_pwr) { min(spool_cap, sink_thr) } else { 0.0 }
-        let phase     = if (touched_down) { "LAND" } else if (hold_active) { "HOLD650" } else if (los_binding) { "LOS-UP" } else if (in_pwr) { "PWR" } else { "GLIDE" }
+        let throttle  = if (touched_down || !use_engines) { 0.0 } else if (in_pwr) { min(spool_cap, sink_thr) } else { 0.0 }
+        let phase     = if (touched_down) { "LAND" } else if (los_binding) { "LOS-UP" } else if (in_pwr) { "PWR" } else if (gs_active) { "GS" } else { "GLIDE2" }
 
         let cmd_pitch =
             if (touched_down) {
                 0.0
-            } else if (hold_active) {
-                hold_pitch
             } else if (in_pwr) {
                 if (scenery_agl < FLARE_AGL_M) { FLARE_PITCH_DEG }
                 else if (los_binding) { los_pitch }
@@ -629,6 +721,15 @@ ssto_prepare_deorbit(vessel, entry_geo)?
             } else {
                 clamp(SPEED_K * (hspd - TARGET_GLIDE_SPEED), -12.0, 4.0)
             }
+
+        if (e_mode == "SINK_RESCUE") {
+            if (use_engines) { throttle = 1.0 }
+            cmd_pitch = max(cmd_pitch, E_RESCUE_PITCH)
+        } else if (e_mode == "TOO_HIGH") {
+            throttle = 0.0
+        } else if (e_mode == "TOO_LOW" && in_pwr && use_engines) {
+            throttle = max(throttle, E_LOW_THR)
+        }
 
         if (!vessel.actions.gear && alt < GEAR_ALT) {
             vessel.actions.gear = true
@@ -639,7 +740,16 @@ ssto_prepare_deorbit(vessel, entry_geo)?
             drogue_deployed = true
             con_log($"DROGUE deployed (rollout braking) at {scenery_agl:F0}m.")
         }
-        if (scenery_agl < AERO_BRAKE_AGL || hspd < 80.0) {
+        if (!touched_down && scenery_agl > E_BRAKE_FLOOR) {
+            let want_ab = e_mode == "TOO_HIGH"
+            if (want_ab != ab_state) {
+                ab_state = want_ab
+                vessel.actions.brakes = want_ab
+            }
+        }
+        const float_braking =
+            scenery_agl < FLOAT_BRAKE_AGL && hspd > FLOAT_BRAKE_HSPD && g.along_track < FLOAT_BRAKE_ALONG
+        if ((float_braking && e_mode != "TOO_LOW") || scenery_agl < AERO_BRAKE_AGL || hspd < 85.0) {
             vessel.actions.brakes = true
         }
 
@@ -668,9 +778,20 @@ ssto_prepare_deorbit(vessel, entry_geo)?
         let rwy_dh    = alt - ref_alt
         let rwy_d     = max(g.along_track, 200.0)
         let rwy_angle = atan2(rwy_dh, rwy_d) * RAD_TO_DEG
-        let los_flag  = if (safe_slope < rwy_angle - LOS_LEAD_DEG) { "GRND" } else { "CLR " }
+        let los_flag  = if (safe_slope < rwy_angle - LOS_LEAD_DEG) { "GROUND " } else { "CLEAR  " }
 
-        status_line($"[{phase}] V:{hspd:F0}  d:{g.along_track/1000:F1}km  alt:{alt/1000:F1}km  vspd:{vspd:F0}  thr:{throttle:F2}  LOS:{safe_slope:F1}/gs{rwy_angle:F1} {los_flag}")
+        if (t - last_polar_log >= 0.1) {
+            last_polar_log = t
+            MAIN_LOG.log(
+                $"mode=POLAR,time={t:F2},phase={phase},throttle={throttle:F2},powered_s={powered_s:F1},tgt_sink={target_sink:F0},safe_slope={safe_slope:F2},gs_angle={rwy_angle:F2},drogue={drogue_deployed},tgt_bank={target_bank:F1},dist={dist:F0},hdg_err={g.heading_error:F1},xtrack={g.cross_track:F0},along={g.along_track:F0},alt={alt:F0},agl={scenery_agl:F0},rho={rho:F5}," +
+                $"hspd={hspd:F1},vspd={vspd:F1},v={v:F1}," +
+                $"pitch={pitch:F2},aoa={aoa:F2},fpa={fpa:F2},roll={roll:F2}," +
+                $"drag={drag:F1},lift={lift:F1},ld={ld:F2},glide={glide:F2}," +
+                $"dq={dq:F2},mach={mach:F2},mass={mass:F1}"
+            )
+        }
+
+        status_line($"[{phase}] V:{hspd:F0}  d:{g.along_track/1000:F1}km  alt:{alt/1000:F1}km  vspd:{vspd:F0}  thr:{throttle:F2}  LOS:{safe_slope:F1}/gs{rwy_angle:F1} {los_flag} E:{e_mode}     ")
 
         if (touched_down && hspd < 5.0) { gliding = false }
         sleep(0.05)

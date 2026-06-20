@@ -16,11 +16,10 @@ use { Vessel, Part, PartCategory } from ksp::vessel
 use { CONSOLE } from ksp::console
 use { yield, wait_while } from ksp::game
 use { format } from core::str
-use { sqrt, min, abs } from core::math
+use { sqrt, min, abs, max } from core::math
 use { Vec3 } from ksp::math
 use { create_resource_transfer, FlowDirection, ResourceContainer, ResourceData, ResourceTransfer } from ksp::resource
 use { SAVE_LOAD_CONTROL } from ksp::debug
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Data types
@@ -63,14 +62,12 @@ impl TankInfo {
         self.capacity_total_mass() - self.stored_total_mass()
 }
 
-
 // A resource type and how much of its mass is currently aboard, used while
 // deciding which fuel to balance.
 struct FuelInfo(resource_name_in: string, resource_mass_in: float) {
     resource_name: string = resource_name_in
     resource_mass: float = resource_mass_in
 }
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Finding fuel and tanks
@@ -83,7 +80,6 @@ fn fuel_tank_parts(vessel: Vessel) -> Part[] = {
     } else []
 }
 
-
 // A part may list several resource entries. They are returned bundled together,
 // so we match against the concatenation of their names rather than any single
 // entry.
@@ -95,7 +91,6 @@ fn find_part_resource_data(part_resources: ResourceContainer, resource_name: str
     }
     None()
 }
-
 
 // Mass of the (non-excluded) fuel held in one part. Air, charge and
 // monopropellant are intentionally left out — we never want to trim with those.
@@ -121,7 +116,6 @@ sync fn find_part_resource_mass(part: Part) -> Option<FuelInfo> = {
     if (total_mass > 0.0001) Some(FuelInfo(combined_name, total_mass)) else None()
 }
 
-
 // Pick the resource we should balance with: the one carrying the most mass
 // across the whole vessel.
 fn find_best_resource(vessel: Vessel) -> Option<string> = {
@@ -144,7 +138,6 @@ fn find_best_resource(vessel: Vessel) -> Option<string> = {
     let sorted = aggregated.sort_by(fn(r) -> r.resource_mass).reverse()
     if (sorted.is_empty) None() else Some(sorted[0].resource_name)
 }
-
 
 // Every tank that holds the chosen fuel, wrapped with its body-frame position.
 fn find_all_tanks(vessel: Vessel, fuel_type_name: string) -> TankInfo[] = {
@@ -172,7 +165,6 @@ fn find_all_tanks(vessel: Vessel, fuel_type_name: string) -> TankInfo[] = {
     }
     tanks
 }
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Geometry
@@ -211,7 +203,6 @@ fn group_tanks_into_rows(all_tanks: TankInfo[], row_xy_tolerance: float) -> Tank
     rows
 }
 
-
 // Split the fuel mass into three zones relative to the centre of mass: forward,
 // backward, and a central dead-band whose tanks are too close to the CoM to move
 // usefully.
@@ -240,7 +231,6 @@ fn calculate_fuel_mass_distribution(all_tanks: TankInfo[], com_z: float, zone_th
                        format("Central: {0:N3}t", central_mass))
     (forward_mass, backward_mass, central_mass)
 }
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Transfer building
@@ -279,7 +269,6 @@ fn add_tanks_with_limit(
     } else 0.0
 }
 
-
 // Queue a whole tank into the transfer, capped at tank_mass_limit. A tank can
 // bundle several resource entries; the limit is split across them in proportion
 // to each entry's share of the available mass.
@@ -317,7 +306,6 @@ fn add_tank_resources_with_limit(
     }
     total_added
 }
-
 
 // Build a single transfer that moves up to total_mass_limit of fuel in one
 // direction along the fore/aft axis.
@@ -381,11 +369,9 @@ fn configure_mass_transfer(
     }
 }
 
-
 // ─────────────────────────────────────────────────────────────────────────────
 //  Rebalance loop
 // ─────────────────────────────────────────────────────────────────────────────
-
 pub fn fuel_rebalance(
     vessel: Vessel,
     forward_fuel_percentage: float,
@@ -486,6 +472,151 @@ pub fn fuel_rebalance(
     Ok({})
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  Lateral (roll) balance
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Lateral version of the transfer builder: move fuel across the body X axis to centre the CoM
+// and kill the roll torque from an asymmetric (e.g. heavier-right) airframe.
+//   move_to_left = true   CoM is right of centre (+X): right tanks SEND, left tanks RECEIVE
+//   move_to_left = false  CoM is left  of centre (-X): left tanks SEND, right tanks RECEIVE
+fn configure_lateral_transfer(
+    all_tanks: TankInfo[],
+    total_mass_limit: float,
+    zone_threshold: float,
+    move_to_left: bool
+) -> Option<ResourceTransfer> = {
+    let eps = 0.0001
+    if (all_tanks.is_empty || total_mass_limit < eps) return None()
+
+    let transfer = create_resource_transfer()
+    let send_remaining = total_mass_limit
+    let recv_remaining = total_mass_limit
+    let send_count = 0
+    let recv_count = 0
+
+    for (tank in all_tanks) {
+        let x = tank.body_pos.x
+        let is_sender = if (move_to_left) { x > zone_threshold } else { x < -zone_threshold }
+        let is_receiver = if (move_to_left) { x < -zone_threshold } else { x > zone_threshold }
+
+        if (is_sender && send_remaining > eps) {
+            let limit = min(send_remaining, tank.stored_total_mass())
+            let added = add_tank_resources_with_limit(transfer, tank, FlowDirection.FLOW_OUTBOUND, limit)
+            if (added > eps) {
+                send_remaining -= added
+                send_count += 1
+            }
+        } else if (is_receiver && recv_remaining > eps) {
+            let limit = min(recv_remaining, tank.remaining_mass_capacity())
+            let added = add_tank_resources_with_limit(transfer, tank, FlowDirection.FLOW_INBOUND, limit)
+            if (added > eps) {
+                recv_remaining -= added
+                recv_count += 1
+            }
+        }
+        yield()
+    }
+
+    CONSOLE.print_line(format(" Senders: {0}, Receivers: {1}", [send_count, recv_count]))
+    if (send_count > 0 && recv_count > 0) {
+        Some(transfer)
+    } else {
+        CONSOLE.print_line(" No suitable senders or receivers found.")
+        None()
+    }
+}
+
+// Widest lateral arm among the tanks — used to size the per-pass transfer.
+sync fn max_lateral_arm(tanks: TankInfo[]) -> float =
+    tanks.map(fn(t) -> abs(t.body_pos.x)).reduce(0.0, fn(a, v) -> max(a, v))
+
+// Shift fuel left/right until the centre of mass sits on the centreline (body X ~ 0), removing
+// the constant roll torque from a laterally asymmetric airframe. Same convergence loop as the
+// fore/aft rebalance: measure CoM.x, transfer toward centre, re-measure, repeat.
+pub fn fuel_rebalance_lateral(
+    vessel: Vessel,
+    offset_threshold: float,
+    quicksave: bool
+) -> Result<Unit, string> = {
+
+    if (quicksave) {
+        CONSOLE.print_line("Creating quick save.")
+        SAVE_LOAD_CONTROL.quick_save()
+        wait_while(fn() -> SAVE_LOAD_CONTROL.is_saving)
+    }
+
+    let best_fuel = find_best_resource(vessel)
+    if (!best_fuel.defined) {
+        CONSOLE.print_line("No fuel found.")
+        return Ok({})
+    }
+    CONSOLE.print_line("Selected: " + best_fuel.value)
+
+    let mytanks: TankInfo[] = find_all_tanks(vessel, best_fuel.value)
+    if (mytanks.is_empty) {
+        CONSOLE.print_line("No tanks found.")
+        return Ok({})
+    }
+
+    const zone_threshold = 0.3      // lateral dead-band, metres (centreline tanks have no arm)
+    const max_passes = 20
+    const progress_eps = 0.0005
+
+    let max_arm = max_lateral_arm(mytanks)
+    if (max_arm < zone_threshold) {
+        CONSOLE.print_line("No off-centre tanks — cannot balance roll.")
+        return Ok({})
+    }
+
+    let prev_offset = 1.0e9
+    let pass_number = 0
+
+    while (pass_number < max_passes) {
+        let com_x = vessel.global_center_of_mass.to_local(vessel.body_frame).x
+        let offset = abs(com_x)
+        let side = if (com_x > 0.0) { "right" } else { "left" }
+
+        CONSOLE.print_line(format("Pass {0}: ", pass_number) +
+                           format("CoM.x {0:N3}m ", com_x) +
+                           "(" + side + "-heavy)")
+
+        if (offset < offset_threshold) {
+            CONSOLE.print_line("Lateral balance reached.")
+            break
+        }
+        if (prev_offset - offset < progress_eps) {
+            CONSOLE.print_line("No further progress.")
+            break
+        }
+
+        // Shifting mass m by arm d moves the CoM by m*d/vessel_mass. Use the widest arm
+        // (conservative -> slight undershoot; the loop converges over passes).
+        let needed = offset * vessel.mass / (2.0 * max_arm)
+        let move_to_left = com_x > 0.0
+
+        let rt = configure_lateral_transfer(mytanks, needed, zone_threshold, move_to_left)
+        if (!rt.defined) {
+            CONSOLE.print_line("No transfer possible.")
+            break
+        }
+
+        const r: ResourceTransfer = rt.value
+        r.start()
+        wait_while(fn() -> r.is_running)
+        r.stop()
+
+        prev_offset = offset
+        pass_number += 1
+        yield()
+    }
+
+    if (pass_number >= max_passes) {
+        CONSOLE.print_line("Max passes reached.")
+    }
+    CONSOLE.print_line("Lateral rebalance complete.")
+    Ok({})
+}
 
 pub fn main_flight(
     vessel: Vessel,
@@ -493,5 +624,11 @@ pub fn main_flight(
     transfer_threshold: float = 0.4,
     quicksave: bool = false
 ) -> Result<Unit, string> = {
-    fuel_rebalance(vessel, forward_fuel_percentage, transfer_threshold, quicksave)
+    // A NEGATIVE forward_fuel_percentage (e.g. -1) selects LATERAL (roll) balance instead of
+    // fore/aft: shift fuel left/right to centre the CoM. Keeps the original parameter list.
+    if (forward_fuel_percentage < 0.0) {
+        fuel_rebalance_lateral(vessel, 0.02, quicksave)
+    } else {
+        fuel_rebalance(vessel, forward_fuel_percentage, transfer_threshold, quicksave)
+    }
 }
