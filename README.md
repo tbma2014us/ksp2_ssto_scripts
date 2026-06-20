@@ -3,11 +3,13 @@
 
 1. [ssto_launch.to2](#ssto_launch)
 
-2. [ssto_landing.to2](#ssto_landing)
+2. [ssto_launch_auto.to2](#ssto_launch_auto)
 
-3. [ssto_com_col_inflight.to2](#ssto_com_col_inflight)
+3. [ssto_landing.to2](#ssto_landing)
 
-4. [ssto_rebalance.to2](#ssto_rebalance)
+4. [ssto_com_col_inflight.to2](#ssto_com_col_inflight)
+
+5. [ssto_rebalance.to2](#ssto_rebalance)
 
 ## Installation
 
@@ -20,6 +22,9 @@ Displays the center of mass and center of lift during flight
 
 ### ssto_launch
 Uses PIDloops to launch the SSTO into LKO
+
+### ssto_launch_auto
+Auto-selects ascent profile from vehicle configuration
 
 ### ssto_landing
 Lands an SSTO from LKO back at KSC - and more
