@@ -35,5 +35,5 @@ Moves the center of mass by automatically transferring fuel
 ---
 [![APACHE 2.0](https://img.shields.io/badge/License-Apache%202.0-brightgreen.svg?longCache=true&style=for-the-badge)](LICENSE)
 [![KSP2](https://img.shields.io/badge/KSP-2-e21401?longCache=true&style=for-the-badge)](https://www.kerbalspaceprogram.com/)
-[![Github-sponsors](https://img.shields.io/badge/sponsor-30363D?style=for-the-badge&logo=GitHub-Sponsors&logoColor=#EA4AAA)](https://github.com/sponsors/tbma2014us)
+[![Github-sponsors](https://img.shields.io/badge/sponsor-8a2be2?longCache=true&style=for-the-badge&logo=GitHub-Sponsors&logoColor=#EA4AAA)](https://github.com/sponsors/tbma2014us)
 
