@@ -1,3 +1,5 @@
+[![Watch the video](https://img.youtube.com/vi/Gzraq9Sko7s/maxresdefault.jpg)](https://www.youtube.com/watch?v=Gzraq9Sko7s)
+
 # KSP2 SSTO Scripts
 [KontrolSystem2](https://github.com/untoldwind/KontrolSystem2) scripts to work with SSTO's
 
