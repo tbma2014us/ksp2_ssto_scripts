@@ -34,7 +34,7 @@ Lands an SSTO from LKO back at KSC - and more
 ### ssto_rebalance
 Moves the center of mass by automatically transferring fuel
 
-# Future plans:
+### Future plans:
 1. Rewrite for Redux
 2. Rewrite for KSP
 3. More complicated athmospheric maneuvers
